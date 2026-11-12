@@ -375,14 +375,25 @@ end
 Settings = {
   VarType = { Boolean = "boolean", Number = "number", String = "string" },
   RegisterVerticalLayoutCategory = newCategory,
+  -- Like the real API: binds to variableTbl by reference (no copy) and fills
+  -- in the default only when the key is nil
   RegisterAddOnSetting = function(category, variable, variableKey, variableTbl, varType, name, default)
+    if type(variableTbl) ~= "table" then error("RegisterAddOnSetting: variableTbl must be a table", 2) end
+    if variableTbl[variableKey] == nil then variableTbl[variableKey] = default end
     local setting = {
       category = category, variable = variable, key = variableKey, tbl = variableTbl,
       varType = varType, name = name, default = default, callbacks = {}, updates = 0,
     }
-    function setting:NotifyUpdate() self.updates = self.updates + 1 end
+    function setting:NotifyUpdate()
+      self.updates = self.updates + 1
+      local v = self.tbl[self.key]
+      for _, cb in ipairs(self.callbacks) do cb(self, v) end
+    end
     function setting:GetValue() return self.tbl[self.key] end
     function setting:SetValue(v)
+      if type(v) ~= self.varType then
+        error(("SetValue: %s expects %s, got %s"):format(tostring(self.variable), tostring(self.varType), type(v)), 2)
+      end
       self.tbl[self.key] = v
       for _, cb in ipairs(self.callbacks) do cb(self, v) end
     end
@@ -397,11 +408,28 @@ Settings = {
     local s = S.cfg.settings[variable]
     if s then s.callbacks[#s.callbacks + 1] = function(setting, v) cb(nil, setting, v) end end
   end,
-  CreateCheckbox = function(category, setting, tooltip) return control("checkbox", category, setting, nil, tooltip) end,
-  CreateSlider = function(category, setting, options, tooltip) return control("slider", category, setting, options, tooltip) end,
-  CreateDropdown = function(category, setting, options, tooltip) return control("dropdown", category, setting, options, tooltip) end,
-  CreateSliderOptions = function(minValue, maxValue, step)
-    local o = { min = minValue, max = maxValue, step = step, formatters = {} }
+  CreateCheckbox = function(category, setting, tooltip)
+    assert(setting and setting.varType == "boolean", "CreateCheckbox needs a boolean setting")
+    return control("checkbox", category, setting, nil, tooltip)
+  end,
+  CreateSlider = function(category, setting, options, tooltip)
+    assert(setting and setting.varType == "number", "CreateSlider needs a number setting")
+    return control("slider", category, setting, options, tooltip)
+  end,
+  -- options is a function returning the entries; call it now, as the panel would
+  CreateDropdown = function(category, setting, options, tooltip)
+    assert(type(options) == "function", "CreateDropdown needs an options function")
+    local entries = options()
+    assert(type(entries) == "table", "dropdown options must return a table")
+    for i = 1, 3 do
+      assert(entries[i] and entries[i].value == i, "dropdown entry " .. i .. " must have value " .. i)
+    end
+    local c = control("dropdown", category, setting, options, tooltip)
+    c.entries = entries
+    return c
+  end,
+  CreateSliderOptions = function(minValue, maxValue, rate)
+    local o = { minValue = minValue, maxValue = maxValue, steps = rate, formatters = {} }
     function o:SetLabelFormatter(where, fn) self.formatters[where] = fn end
     return o
   end,
@@ -411,6 +439,7 @@ Settings = {
     function c:GetData() return self.data end
     return c
   end,
+  -- each call is recorded, so #S.cfg.addOnCategories is the call count
   RegisterAddOnCategory = function(category) S.cfg.addOnCategories[#S.cfg.addOnCategories + 1] = category end,
   OpenToCategory = function(id) S.cfg.opened[#S.cfg.opened + 1] = id end,
 }

@@ -1069,7 +1069,8 @@ test("slash commands run without errors", function()
   cmd("sev 2.5"); eq(ns.db.minSeverity, 2, "fractional sev rejected")
   cmd("sev 3"); eq(ns.db.minSeverity, 3, "sev set")
   cmd("margin 5"); eq(ns.db.upgradeMargin, 5, "margin set")
-  cmd("margin -1"); eq(ns.db.upgradeMargin, 5, "negative margin rejected")
+  cmd("margin -1"); eq(ns.db.upgradeMargin, 0, "negative margin clamped to 0")
+  cmd("margin 5")
   cmd("sound"); eq(ns.db.sound, false, "sound toggled")
   cmd("gear"); ok(S.chatCount("usage: /ag gear") == 1, "gear usage")
   cmd("gear nobody"); ok(S.chatCount("no group member named nobody") == 1, "gear unknown")
@@ -1381,7 +1382,7 @@ test("slash changes call Config.Refresh with the changed key", function()
   eq(table.concat(rec.refresh, ","),
     "enabled,enabled,minSeverity,upgradeMargin,sound,screen,announce,dropReport,dropReport,usePawn", "keys")
   rec.refresh = {}
-  for _, c in ipairs({ "sev 9", "margin -1", "margin x", "status", "scan", "log", "clear", "help", "test nothing" }) do
+  for _, c in ipairs({ "sev 9", "margin x", "margin", "status", "scan", "log", "clear", "help", "test nothing" }) do
     cmd(c)
   end
   eq(#rec.refresh, 0, "no Refresh for rejected input or read-only commands")
@@ -1442,7 +1443,8 @@ if HAS_CONFIG then
     eq(sev:GetDefaultValue(), 2, "severity default")
     local slider
     for _, c in ipairs(S.cfg.controls) do if c.kind == "slider" then slider = c end end
-    eq(slider.options.min, 0, "slider min"); eq(slider.options.max, 30, "slider max")
+    eq(slider.options.minValue, 0, "slider min"); eq(slider.options.maxValue, 30, "slider max")
+    eq(slider.options.steps, 1, "slider step")
   end)
 
   test("Config.lua: the panel reads live values and writes ns.db", function()
@@ -1470,12 +1472,63 @@ if HAS_CONFIG then
     eq(S.chatCount("can't open the options in combat"), 1, "combat message")
   end)
 
-  test("Config.lua: no Settings global -> nothing registered, no error", function()
-    fresh(function(s) Settings = nil; s.cfg.controls = {} end)
+  test("Config.lua: no Settings global -> Init does nothing, Open prints the hint", function()
+    fresh(function() Settings = nil end)
     eq(#S.cfg.controls, 0, "no controls")
+    eq(#S.cfg.categories, 0, "no category")
     ok(ns.db and ns.db.enabled, "addon loaded")
+    ns.Config.Open()
+    eq(S.chatCount("the options page isn't available on this client"), 1, "hint")
+    eq(#S.cfg.opened, 0, "nothing opened")
+  end)
+
+  test("Config.lua: every control has a tooltip; variables are ANTIGRIEF_<key>", function()
+    for _, c in ipairs(S.cfg.controls) do
+      ok(type(c.tooltip) == "string" and c.tooltip ~= "", c.setting.key .. " tooltip")
+      eq(c.setting.variable, "ANTIGRIEF_" .. c.setting.key, "variable name")
+    end
+  end)
+
+  test("Config.lua: Init runs only once, even when called twice", function()
+    ns.Config.Init()
+    ns.Config.Init()
+    eq(#S.cfg.controls, 8, "still 8 controls")
+    eq(#S.cfg.categories, 1, "one category")
+    eq(#S.cfg.addOnCategories, 1, "RegisterAddOnCategory called once")
+  end)
+
+  test("Config.lua: Open passes the category's numeric ID", function()
+    ns.Config.Open()
+    eq(type(S.cfg.opened[1]), "number", "number")
+    eq(S.cfg.opened[1], S.cfg.categories[1]:GetID(), "category:GetID()")
+  end)
+
+  test("Config.lua: panel and /ag share one table, never a copy", function()
+    local margin = settingFor("upgradeMargin")
+    eq(margin.tbl, AntiGriefDB, "bound to the SavedVariable table itself")
+    SlashCmdList.ANTIGRIEF("margin 12"); eq(margin:GetValue(), 12, "slash -> panel")
+    margin:SetValue(20); eq(ns.db.upgradeMargin, 20, "panel -> db")
+    SlashCmdList.ANTIGRIEF("status")
+    eq(S.chatCount("margin 20"), 1, "panel value used by /ag status")
+    settingFor("enabled"):SetValue(false)
+    party()
+    eq(#roll(31, I.robe58), 0, "panel off -> no drop report")
   end)
 end
+
+test("/ag margin is clamped to 0-30, whole numbers; usage says so", function()
+  local cmd = SlashCmdList.ANTIGRIEF
+  cmd("margin 50"); eq(ns.db.upgradeMargin, 30, "clamped high")
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: upgrade margin 30 item levels (allowed 0-30)", "clamp message")
+  cmd("margin -4"); eq(ns.db.upgradeMargin, 0, "clamped low")
+  cmd("margin 6.6"); eq(ns.db.upgradeMargin, 7, "rounded")
+  cmd("margin 9"); eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: upgrade margin 9 item levels", "in range: no note")
+  cmd("margin x"); eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: usage: /ag margin <0-30>", "usage")
+  eq(ns.db.upgradeMargin, 9, "unchanged by bad input")
+  cmd("help"); eq(S.chatCount("/ag margin 0-30 - "), 1, "help")
+  reloadWith({ upgradeMargin = 45 })
+  eq(ns.db.upgradeMargin, 30, "saved value above the range clamped on load")
+end)
 
 ---------------------------------------------------------------------------
 -- Run

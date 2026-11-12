@@ -17,6 +17,7 @@ local LOAD_RETRIES  = 3   -- uncached item: retry this many times, 1 s apart
 local RESCAN_GAP    = 30  -- UNIT_INVENTORY_CHANGED re-scan at most this often
 local DROP_REPORT_MAX = 10   -- drop report: above this many members, collapse; cap on "doesn't fit" lines
 local ROLL_MEMORY     = 900  -- seconds a reported rollID is remembered (rolls last minutes)
+local MARGIN_MIN, MARGIN_MAX = 0, 30 -- upgradeMargin range; matches the options slider
 
 local PREFIX = "|cff40c0ffAntiGrief|r: "
 local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
@@ -391,7 +392,7 @@ local HELP = {
   "/ag gear <name> - show a member's cached gear",
   "/ag test <shift-click item> - evaluate an item against the group",
   "/ag sev 1-3 - alert threshold (1 Low, 2 Medium, 3 High)",
-  "/ag margin <n> - item-level gap for the upgrade check",
+  "/ag margin 0-30 - item-level gap for the upgrade check",
   "/ag drops - toggle the fit report on new drops (alias: hints)",
   "/ag sound | screen | announce | pawn - toggle",
   "/ag log | clear - show or clear recent flags",
@@ -462,9 +463,14 @@ SlashCmdList.ANTIGRIEF = function(input)
 
   elseif cmd == "margin" then
     local n = tonumber(rest)
-    if n and n >= 0 then
-      ns.db.upgradeMargin = n; Print("upgrade margin " .. n .. " item levels"); Changed("upgradeMargin")
-    else Print("usage: /ag margin <number>") end
+    if n and n == n then -- not NaN
+      -- whole numbers within the options slider's range
+      local m = math.max(MARGIN_MIN, math.min(MARGIN_MAX, math.floor(n + 0.5)))
+      ns.db.upgradeMargin = m
+      Print(("upgrade margin %d item levels%s"):format(m,
+        (m ~= n) and (" (allowed %d-%d)"):format(MARGIN_MIN, MARGIN_MAX) or ""))
+      Changed("upgradeMargin")
+    else Print(("usage: /ag margin <%d-%d>"):format(MARGIN_MIN, MARGIN_MAX)) end
 
   elseif cmd == "sound" then Toggle("sound", "Sound")
   elseif cmd == "screen" then Toggle("screen", "Banner")
@@ -504,7 +510,13 @@ local function LoadSettings()
   end
   for _, k in ipairs(RETIRED_KEYS) do db[k] = nil end
   if not D.SEV_NAME[db.minSeverity] then db.minSeverity = DEFAULTS.minSeverity end
-  if db.upgradeMargin < 0 then db.upgradeMargin = DEFAULTS.upgradeMargin end
+  if db.upgradeMargin < MARGIN_MIN or db.upgradeMargin ~= db.upgradeMargin then
+    db.upgradeMargin = DEFAULTS.upgradeMargin -- corrupt
+  elseif db.upgradeMargin > MARGIN_MAX then
+    db.upgradeMargin = MARGIN_MAX            -- e.g. set by /ag margin before the cap
+  end
+  -- ns.db is this same table from here on (edited in place, never replaced):
+  -- the options panel binds its settings to it in Config.Init
   ns.db = db
 end
 
