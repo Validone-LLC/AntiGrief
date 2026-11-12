@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: AntiGrief
+## Notes: Scans your group's gear and warns you when someone rolls Need on loot that doesn't suit them.
+## Author: Dennis Nayandin
+## Version: 1.0.0
+## SavedVariables: AntiGriefDB
+## OptionalDeps: Pawn
+## Category: Group & Loot
+
+Data.lua
+Inspect.lua
+Rules.lua
+Pawn.lua
+AntiGrief.lua
