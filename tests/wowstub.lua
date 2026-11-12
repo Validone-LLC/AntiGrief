@@ -429,7 +429,8 @@ Settings = {
     return c
   end,
   CreateSliderOptions = function(minValue, maxValue, rate)
-    local o = { minValue = minValue, maxValue = maxValue, steps = rate, formatters = {} }
+    -- like Settings.CreateSliderOptions: steps is the number of steps, not the step size
+    local o = { minValue = minValue, maxValue = maxValue, steps = (maxValue - minValue) / rate, formatters = {} }
     function o:SetLabelFormatter(where, fn) self.formatters[where] = fn end
     return o
   end,

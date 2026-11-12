@@ -1183,6 +1183,20 @@ test("drop report: raid collapses to a fits line and caps the rest", function()
   eq(out[13], "   |cff999999...and 2 more|r", "overflow line")
 end)
 
+test("drop report: a member whose only finding is Low is listed as a misfit, not 'fits'", function()
+  -- Fits() (AntiGrief.lua:285) is maxSev < Low: a Low-only member gets a Low line
+  party()
+  local out = roll(40, I.leatherChest) -- leather on a level-60 warrior: Low lower-armor note only
+  eq(out[3], "   |cffd0d070Bob (Warrior): Low - Leather is a lower armor type than a Warrior normally wears|r"
+    .. " |cff999999(not scanned)|r", "party: Low line")
+  raid(11, 2) -- W2, W3 get only the Low note; the mages (player included) get High
+  out = roll(41, I.leatherChest)
+  eq(out[2], "   |cff40ff40fits: nobody|r", "raid: Low-only warriors not on the fits line")
+  eq(out[4], "   |cffd0d070W2 (Warrior): Low - Leather is a lower armor type than a Warrior normally wears|r"
+    .. " |cff999999(not scanned)|r", "raid: W2 has a Low line")
+  eq(out[#out], "   |cff999999...and 1 more|r", "11 misfits: 10 lines + 1 more")
+end)
+
 test("drop report: exactly 10 members get one line each; nobody fits shows 'nobody'", function()
   raid(10, 3)
   local out = roll(1, I.plateChest)
@@ -1339,6 +1353,22 @@ test("config: Init runs once at ADDON_LOADED, after the settings are loaded", fu
   ok(sawDB ~= nil and sawDB == AntiGriefDB, "settings loaded before Init")
 end)
 
+test("config: RegisterAddOnSetting raising -> one 'unavailable' line, /ag config hint, alerts work", function()
+  fresh(function() Settings.RegisterAddOnSetting = function() error("boom") end end)
+  items()
+  ok(ns.db and ns.db.enabled, "addon loaded")
+  if HAS_CONFIG then
+    eq(S.chatCount("options page unavailable"), 1, "exactly one unavailable line")
+    SlashCmdList.ANTIGRIEF("config")
+    eq(S.chatCount("the options page isn't available on this client"), 1, "/ag config hint")
+    eq(#S.cfg.opened, 0, "nothing opened")
+  end
+  eq(S.chatCount("options panel error"), 0, "contained inside Config.Init")
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("rolled NEED"), 1, "Need alert still fires")
+end)
+
 test("config: an error in Init is reported and the addon still starts", function()
   S = assert(loadfile(path("tests/wowstub.lua")))()
   loadAddon()
@@ -1441,10 +1471,20 @@ if HAS_CONFIG then
     local choices = dd.options()
     eq(#choices, 3, "severity choices"); eq(choices[1].value, 1, "Low"); eq(choices[3].value, 3, "High")
     eq(sev:GetDefaultValue(), 2, "severity default")
+    local SPEC_DEFAULTS = { enabled = true, minSeverity = 2, sound = true, screen = true, announce = false,
+      dropReport = true, upgradeMargin = 8, usePawn = true }
+    local n = 0
+    for key, want in pairs(SPEC_DEFAULTS) do
+      local st = settingFor(key)
+      ok(st, key .. " has a control")
+      eq(st:GetDefaultValue(), want, key .. " GetDefaultValue")
+      n = n + 1
+    end
+    eq(n, 8, "all eight defaults checked")
     local slider
     for _, c in ipairs(S.cfg.controls) do if c.kind == "slider" then slider = c end end
     eq(slider.options.minValue, 0, "slider min"); eq(slider.options.maxValue, 30, "slider max")
-    eq(slider.options.steps, 1, "slider step")
+    eq(slider.options.steps, 30, "slider steps: (30 - 0) / 1")
   end)
 
   test("Config.lua: the panel reads live values and writes ns.db", function()
