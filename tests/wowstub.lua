@@ -1,0 +1,306 @@
+-- Minimal WoW API stub for offline tests. Not an emulator: just enough
+-- surface for the AntiGrief files to load and the rules to be exercised.
+-- Loading this file (re)defines every global it fakes and returns the
+-- control table S.
+
+local S = {
+  now = 1000,
+  timers = {},
+  frames = {},
+  chat = {},
+  sounds = 0,
+  banners = {},
+  sent = {},
+  notified = {},
+  cleared = 0,
+  loadRequests = 0,
+  items = {},     -- itemID -> definition
+  units = {},     -- unit token -> { guid, name, class, level, spec, items, far, offline, noName, lateLinks, linksReadyAt }
+  groupKind = nil, -- nil | "party" | "raid"
+  instance = false,
+  combat = false,
+  secret = {},
+  rolls = {},
+}
+
+---------------------------------------------------------------------------
+-- Clock and timers
+---------------------------------------------------------------------------
+function GetTime() return S.now end
+
+local function addTimer(delay, fn, interval)
+  local t = { due = S.now + delay, fn = fn, interval = interval }
+  S.timers[#S.timers + 1] = t
+  return t
+end
+
+C_Timer = {
+  After = function(delay, fn) addTimer(delay, fn) end,
+  NewTicker = function(interval, fn)
+    local t = addTimer(interval, fn, interval)
+    t.Cancel = function(self) self.cancelled = true end
+    return t
+  end,
+}
+
+-- Advance the clock by dt seconds, running due timers in time order
+function S.advance(dt)
+  local target = S.now + dt + 1e-9
+  while true do
+    local best, bi
+    for i, t in ipairs(S.timers) do
+      if not t.cancelled and t.due <= target and (not best or t.due < best.due) then best, bi = t, i end
+    end
+    if not best then break end
+    if best.due > S.now then S.now = best.due end
+    if best.interval then
+      best.due = best.due + best.interval
+      best.fn(best)
+    else
+      table.remove(S.timers, bi)
+      best.fn()
+    end
+  end
+  S.now = target
+end
+
+---------------------------------------------------------------------------
+-- Frames and events
+---------------------------------------------------------------------------
+function CreateFrame()
+  local f = { events = {}, scripts = {} }
+  function f:RegisterEvent(e) self.events[e] = true end
+  function f:UnregisterEvent(e) self.events[e] = nil end
+  function f:SetScript(k, fn) self.scripts[k] = fn end
+  f.IsShown = function() return false end
+  S.frames[#S.frames + 1] = f
+  return f
+end
+
+function S.fire(event, ...)
+  for _, f in ipairs(S.frames) do
+    if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end
+  end
+end
+
+---------------------------------------------------------------------------
+-- Chat, alerts, sound
+---------------------------------------------------------------------------
+DEFAULT_CHAT_FRAME = { AddMessage = function(_, msg) S.chat[#S.chat + 1] = msg end }
+RaidWarningFrame = {}
+function RaidNotice_AddMessage(_, text) S.banners[#S.banners + 1] = text end
+ChatTypeInfo = { RAID_WARNING = { r = 1, g = 0.28, b = 0 } }
+SOUNDKIT = { RAID_WARNING = 8959 }
+function PlaySound() S.sounds = S.sounds + 1 end
+function SendChatMessage(msg, channel) S.sent[#S.sent + 1] = { msg = msg, channel = channel } end
+C_ChatInfo = { SendChatMessage = SendChatMessage }
+LE_PARTY_CATEGORY_HOME = 1
+LE_PARTY_CATEGORY_INSTANCE = 2
+SlashCmdList = {}
+SLASH_ANTIGRIEF1, SLASH_ANTIGRIEF2 = nil, nil
+AntiGriefDB = nil
+InspectFrame = nil
+function issecretvalue(v) return S.secret[v] == true end
+
+function wipe(t) for k in pairs(t) do t[k] = nil end return t end
+date = os.date
+time = os.time
+
+-- Count chat lines containing a plain substring
+function S.chatCount(sub)
+  local n = 0
+  for _, m in ipairs(S.chat) do if m:find(sub, 1, true) then n = n + 1 end end
+  return n
+end
+
+---------------------------------------------------------------------------
+-- Global strings (enUS)
+---------------------------------------------------------------------------
+LOOT_ROLL_NEED = "%s has selected Need for: %s"
+LOOT_ROLL_NEED_SELF = "You have selected Need for: %s"
+LOOT_ROLL_ROLLED_NEED = "Need Roll - %d for %s by %s"
+LOOT_ROLL_ROLLED_NEED_ROLE_BONUS = nil
+ITEM_SPELL_TRIGGER_ONEQUIP = "Equip:"
+ITEM_SPELL_TRIGGER_ONUSE = "Use:"
+ITEM_SPELL_TRIGGER_ONPROC = "Chance on hit:"
+INVSLOT_RANGED = nil
+INVTYPE_HEAD, INVTYPE_CHEST, INVTYPE_HAND = "Head", "Chest", "Hands"
+INVTYPE_FINGER, INVTYPE_WEAPON, INVTYPE_ROBE = "Finger", "One-Hand", "Chest"
+LOCALIZED_CLASS_NAMES_MALE = {
+  WARRIOR = "Warrior", PALADIN = "Paladin", HUNTER = "Hunter", ROGUE = "Rogue", PRIEST = "Priest",
+  SHAMAN = "Shaman", MAGE = "Mage", WARLOCK = "Warlock", DRUID = "Druid",
+}
+function GetLocale() return "enUS" end
+
+---------------------------------------------------------------------------
+-- Items
+---------------------------------------------------------------------------
+-- def: { id, name, classID, subclassID, subType, equipLoc, ilvl, minLevel,
+--        bind, stats = {KEY = n}, effects = {"Equip: ..."}, uncached, neverCache }
+function S.AddItem(def)
+  def.quality = def.quality or 4
+  def.link = def.link or ("|cffa335ee|Hitem:%d::::::::60:::::::::|h[%s]|h|r"):format(def.id, def.name)
+  S.items[def.id] = def
+  return def.link
+end
+
+local function lookup(item)
+  if type(item) == "number" then return S.items[item] end
+  if type(item) == "string" then
+    local id = tonumber(item:match("item:(%d+)"))
+    return id and S.items[id]
+  end
+end
+
+local function cached(def)
+  if not def.uncached then return true end
+  return def.cacheAt ~= nil and S.now >= def.cacheAt
+end
+
+local function GetItemInfoInstant(item)
+  local d = lookup(item)
+  if not d then return nil end
+  return d.id, d.itemType or "Armor", d.subType, d.equipLoc, 134400, d.classID, d.subclassID
+end
+
+local function GetItemInfo(item)
+  local d = lookup(item)
+  if not d or not cached(d) then return nil end
+  return d.name, d.link, d.quality, d.ilvl, d.minLevel or 0, d.itemType or "Armor", d.subType, 1,
+    d.equipLoc, 134400, 0, d.classID, d.subclassID, d.bind or 0
+end
+
+local function GetItemStats(link)
+  local d = lookup(link)
+  local out = {}
+  if d and d.stats then for k, v in pairs(d.stats) do out[k] = v end end
+  return out
+end
+
+local function GetDetailedItemLevelInfo(link)
+  local d = lookup(link)
+  if not d or not cached(d) then return nil end
+  return d.ilvl, false, d.ilvl
+end
+
+C_Item = {
+  GetItemInfo = GetItemInfo,
+  GetItemInfoInstant = GetItemInfoInstant,
+  GetItemStats = GetItemStats,
+  GetDetailedItemLevelInfo = GetDetailedItemLevelInfo,
+  RequestLoadItemDataByID = function(id)
+    S.loadRequests = S.loadRequests + 1
+    local d = lookup(id)
+    if d and d.uncached and not d.neverCache and not d.cacheAt then d.cacheAt = S.now + 0.5 end
+  end,
+}
+
+C_TooltipInfo = {
+  GetHyperlink = function(link)
+    local d = lookup(link)
+    if not d then return nil end
+    local lines = { { leftText = d.name } }
+    for _, e in ipairs(d.effects or {}) do lines[#lines + 1] = { leftText = "|cff00ff00" .. e .. "|r" } end
+    return { lines = lines }
+  end,
+}
+
+C_AddOns = { IsAddOnLoaded = function() return false end }
+
+function GetLootRollItemLink(id) return S.rolls[id] end
+
+---------------------------------------------------------------------------
+-- Units, group, inspect
+---------------------------------------------------------------------------
+function S.SetGroup(units, kind)
+  S.units = units
+  S.groupKind = kind
+end
+
+local function U(unit) return type(unit) == "string" and S.units[unit] or nil end
+
+function UnitGUID(u) local d = U(u); return d and d.guid end
+function UnitClass(u)
+  local d = U(u)
+  if d then return LOCALIZED_CLASS_NAMES_MALE[d.class] or d.class, d.class end
+end
+function UnitLevel(u) local d = U(u); return d and d.level or 0 end
+function UnitName(u)
+  local d = U(u)
+  if not d or d.noName then return nil end
+  local n, r = d.name:match("^([^-]+)%-?(.*)$")
+  return n, (r ~= "" and r or nil)
+end
+function GetUnitName(u, showServer)
+  local d = U(u)
+  if not d or d.noName then return nil end
+  if showServer then return d.name end
+  return (d.name:match("^[^-]+"))
+end
+function UnitIsUnit(a, b)
+  local ga, gb = UnitGUID(a), UnitGUID(b)
+  return ga ~= nil and ga == gb
+end
+function UnitIsPlayer(u) local d = U(u); return d ~= nil and not d.npc end
+function UnitIsConnected(u) local d = U(u); return d ~= nil and not d.offline end
+function CanInspect(u) return U(u) ~= nil end
+function CheckInteractDistance(u) local d = U(u); return d ~= nil and not d.far end
+
+function IsInRaid() return S.groupKind == "raid" end
+function IsInGroup(category)
+  if category == LE_PARTY_CATEGORY_INSTANCE and category ~= nil then
+    return S.groupKind ~= nil and S.instance
+  end
+  return S.groupKind ~= nil
+end
+function GetNumGroupMembers()
+  local n = 0
+  for token in pairs(S.units) do
+    if S.groupKind == "raid" and token:find("^raid%d+$") then n = n + 1 end
+    if S.groupKind == "party" and (token == "player" or token:find("^party%d+$")) then n = n + 1 end
+  end
+  return n
+end
+function GetNumSubgroupMembers()
+  local n = 0
+  for token in pairs(S.units) do if token:find("^party%d+$") then n = n + 1 end end
+  return n
+end
+function InCombatLockdown() return S.combat end
+
+function NotifyInspect(u)
+  S.notified[#S.notified + 1] = u
+  S.inspectTarget = UnitGUID(u)
+end
+function ClearInspectPlayer()
+  S.cleared = S.cleared + 1
+  S.inspectTarget = nil
+end
+
+local function visibleItem(u, slot)
+  local d = U(u)
+  if not d or not d.items then return nil end
+  if not UnitIsUnit(u, "player") and S.inspectTarget ~= d.guid then return nil end
+  return d.items[slot], d
+end
+
+function GetInventoryItemLink(u, slot)
+  local link, d = visibleItem(u, slot)
+  if link and d.lateLinks and d.lateLinks[slot] and S.now < (d.linksReadyAt or math.huge) then return nil end
+  return link
+end
+function GetInventoryItemID(u, slot)
+  local link = visibleItem(u, slot)
+  return link and tonumber(link:match("item:(%d+)")) or nil
+end
+function GetInspectSpecialization(u) local d = U(u); return d and d.spec or 0 end
+function GetSpecialization() return nil end
+function GetSpecializationInfo() return nil end
+GetSpecializationInfoByID = nil
+
+function Ambiguate(name, context)
+  if context == "short" then return (name:match("^[^-]+")) or name end
+  return name
+end
+
+return S
