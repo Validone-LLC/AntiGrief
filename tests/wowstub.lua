@@ -109,7 +109,8 @@ LE_PARTY_CATEGORY_INSTANCE = 2
 SlashCmdList = {}
 SLASH_ANTIGRIEF1, SLASH_ANTIGRIEF2 = nil, nil
 AntiGriefDB = nil
-InspectFrame = nil
+-- Blizzard_InspectUI frame; S.inspectFrameShown simulates the player's own Inspect window
+InspectFrame = { IsShown = function() return S.inspectFrameShown == true end }
 function issecretvalue(v) return S.secret[v] == true end
 
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
@@ -151,7 +152,8 @@ LOCALIZED_CLASS_NAMES_MALE = {
   WARRIOR = "Warrior", PALADIN = "Paladin", HUNTER = "Hunter", ROGUE = "Rogue", PRIEST = "Priest",
   SHAMAN = "Shaman", MAGE = "Mage", WARLOCK = "Warlock", DRUID = "Druid",
 }
-function GetLocale() return "enUS" end
+S.locale = "enUS"
+function GetLocale() return S.locale end
 
 ---------------------------------------------------------------------------
 -- Items
@@ -264,7 +266,7 @@ function UnitIsUnit(a, b)
 end
 function UnitIsPlayer(u) local d = U(u); return d ~= nil and not d.npc end
 function UnitIsConnected(u) local d = U(u); return d ~= nil and not d.offline end
-function CanInspect(u) return U(u) ~= nil end
+function CanInspect(u) local d = U(u); return d ~= nil and not d.noInspect end
 function CheckInteractDistance(u) local d = U(u); return d ~= nil and not d.far end
 
 function IsInRaid() return S.groupKind == "raid" end

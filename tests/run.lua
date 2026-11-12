@@ -15,8 +15,11 @@ local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "AntiGrief.lua
 
 local S, ns
 
-local function fresh()
+-- setup(S), if given, runs after the stub loads and before the addon files
+-- (for load-time state such as the client locale)
+local function fresh(setup)
   S = assert(loadfile(path("tests/wowstub.lua")))()
+  if setup then setup(S) end
   ns = {}
   for _, f in ipairs(TOC) do
     local chunk, err = loadfile(path(f))
@@ -284,6 +287,133 @@ test("non-gear and ignored slots are not judged", function()
   eq(evaluate(I.plateChest, { name = "Bob" }), nil, "no class")
 end)
 
+-- Fit rules: effect lines, skips, gates, roles, resists ----------------------
+
+local function ring(id, name, effects, stats)
+  return S.AddItem { id = id, name = name, classID = ARMOR, subclassID = 0, subType = "Miscellaneous",
+    equipLoc = "INVTYPE_FINGER", ilvl = 60, minLevel = 55, stats = stats, effects = effects }
+end
+
+test("effects: 'critical strike with spells' counts as Caster, not attack power", function()
+  local spellCrit = ring(3001, "Ring of Spell Crit",
+    { "Equip: Improves your chance to get a critical strike with spells by 1%." })
+  local f, sev = evaluate(spellCrit, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev, 3, "spell-crit ring on a warrior")
+  expectFinding(f, 3, "(spell power/healing) don't suit a Warrior")
+  local meleeCrit = ring(3002, "Ring of Melee Crit",
+    { "Equip: Improves your chance to get a critical strike by 1%." })
+  local f2, sev2 = evaluate(meleeCrit, { name = "Zap", class = "MAGE", level = 60 })
+  eq(sev2, 3, "melee-crit ring on a mage")
+  expectFinding(f2, 3, "(attack power) don't suit a Mage")
+  local _, sev3 = evaluate(meleeCrit, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev3, 0, "melee-crit ring fits a warrior")
+end)
+
+test("effects: Use: and Chance on hit: lines count; other lines don't", function()
+  local useTrinket = S.AddItem { id = 3003, name = "Badge of Fury", classID = ARMOR, subclassID = 0,
+    subType = "Miscellaneous", equipLoc = "INVTYPE_TRINKET", ilvl = 60, minLevel = 55,
+    effects = { "Use: Increases attack power by 200 for 20 sec." } }
+  local f, sev = evaluate(useTrinket, { name = "Pri", class = "PRIEST", level = 60 })
+  eq(sev, 3, "Use: attack power trinket on a priest")
+  expectFinding(f, 3, "(attack power) don't suit a Priest")
+  local procDagger = S.AddItem { id = 3004, name = "Frenzy Shiv", classID = WEAPON, subclassID = DAGGER,
+    itemType = "Weapon", subType = "Daggers", equipLoc = "INVTYPE_WEAPON", ilvl = 60, minLevel = 55,
+    effects = { "Chance on hit: Increases your attack power by 50 for 10 sec." } }
+  local _, sev2 = evaluate(procDagger, { name = "Zap", class = "MAGE", level = 60 })
+  eq(sev2, 3, "Chance on hit: attack power dagger on a mage")
+  local setTrinket = S.AddItem { id = 3005, name = "Badge of Nothing", classID = ARMOR, subclassID = 0,
+    subType = "Miscellaneous", equipLoc = "INVTYPE_TRINKET", ilvl = 60, minLevel = 55,
+    effects = { "(2) Set: Increases attack power by 20." } }
+  local _, sev3 = evaluate(setTrinket, { name = "Pri", class = "PRIEST", level = 60 })
+  eq(sev3, 0, "a non-trigger line is ignored")
+end)
+
+test("effects: English-only; a deDE client skips the effect check", function()
+  fresh(function(s) s.locale = "deDE" end)
+  items()
+  eq(ns.Data.EFFECT_KEYWORDS_ACTIVE, false, "keywords off on deDE")
+  local f, sev = evaluate(I.staminaSpellGloves, { name = "Sly", class = "ROGUE", level = 60 })
+  eq(sev, 0, "Stamina + spell Equip line on a rogue passes on deDE " .. dump(f))
+  local _, sev2 = evaluate(I.spellDagger, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev2, 3, "plain stat check still runs on deDE")
+end)
+
+test("skips: cloak armor type is not judged; its stats still are", function()
+  local agiCloak = S.AddItem { id = 3006, name = "Cloak of Agility", classID = ARMOR, subclassID = CLOTH,
+    subType = "Cloth", equipLoc = "INVTYPE_CLOAK", ilvl = 60, minLevel = 55, stats = { ITEM_MOD_AGILITY_SHORT = 10 } }
+  local f, sev = evaluate(agiCloak, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev, 0, "cloth cloak on a warrior " .. dump(f))
+  local intCloak = S.AddItem { id = 3007, name = "Cloak of Intellect", classID = ARMOR, subclassID = CLOTH,
+    subType = "Cloth", equipLoc = "INVTYPE_CLOAK", ilvl = 60, minLevel = 55, stats = { ITEM_MOD_INTELLECT_SHORT = 10 } }
+  local _, sev2 = evaluate(intCloak, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev2, 3, "Int cloak on a warrior: stat check still runs")
+end)
+
+test("skips: fishing poles and misc weapons are not type-checked", function()
+  local pole = S.AddItem { id = 3008, name = "Big Iron Fishing Pole", classID = WEAPON, subclassID = 20,
+    itemType = "Weapon", subType = "Fishing Poles", equipLoc = "INVTYPE_2HWEAPON", ilvl = 30, minLevel = 20 }
+  local misc = S.AddItem { id = 3009, name = "Skinning Knife", classID = WEAPON, subclassID = 14,
+    itemType = "Weapon", subType = "Miscellaneous", equipLoc = "INVTYPE_WEAPON", ilvl = 10, minLevel = 5 }
+  local f, sev = evaluate(pole, { name = "Zap", class = "MAGE", level = 60 })
+  eq(sev, 0, "fishing pole on a mage " .. dump(f))
+  local f2, sev2 = evaluate(misc, { name = "Zap", class = "MAGE", level = 60 })
+  eq(sev2, 0, "misc weapon on a mage " .. dump(f2))
+end)
+
+test("gates: mail at 40 for hunters and shamans; lower-armor note follows the gate", function()
+  local mail = S.AddItem { id = 3010, name = "Chain Hauberk", classID = ARMOR, subclassID = 3, subType = "Mail",
+    equipLoc = "INVTYPE_CHEST", ilvl = 30, minLevel = 25, stats = { ITEM_MOD_AGILITY_SHORT = 5 } }
+  local hunterF, hunter30 = evaluate(mail, { name = "Hun", class = "HUNTER", level = 30 })
+  eq(hunter30, 3, "mail on a level-30 hunter")
+  expectFinding(hunterF, 3, "Hunter can't wear Mail until level 40")
+  local shamanF, shaman30 = evaluate(mail, { name = "Sha", class = "SHAMAN", level = 30 })
+  eq(shaman30, 3, "mail on a level-30 shaman")
+  expectFinding(shamanF, 3, "Shaman can't wear Mail until level 40")
+  local _, hunter40 = evaluate(mail, { name = "Hun", class = "HUNTER", level = 40 })
+  eq(hunter40, 0, "mail on a level-40 hunter")
+  local leather = S.AddItem { id = 3011, name = "Hide Vest", classID = ARMOR, subclassID = LEATHER, subType = "Leather",
+    equipLoc = "INVTYPE_CHEST", ilvl = 30, minLevel = 25, stats = { ITEM_MOD_AGILITY_SHORT = 5 } }
+  local _, leather30 = evaluate(leather, { name = "Hun", class = "HUNTER", level = 30 })
+  eq(leather30, 0, "leather is best-available for a level-30 hunter")
+  local _, leather60 = evaluate(leather, { name = "Hun", class = "HUNTER", level = 60 })
+  eq(leather60, 1, "leather is a lower type for a level-60 hunter")
+  local cloth = S.AddItem { id = 3012, name = "Linen Vest", classID = ARMOR, subclassID = CLOTH, subType = "Cloth",
+    equipLoc = "INVTYPE_CHEST", ilvl = 30, minLevel = 25, stats = { ITEM_MOD_AGILITY_SHORT = 5 } }
+  local clothF, cloth30 = evaluate(cloth, { name = "Hun", class = "HUNTER", level = 30 })
+  eq(cloth30, 1, "cloth on a level-30 hunter")
+  expectFinding(clothF, 1, "Cloth is a lower armor type than a Hunter normally wears")
+end)
+
+test("roles: an unmapped Healer spec is treated as a caster", function()
+  local roles = { [999] = "HEALER", [998] = "DAMAGER" }
+  GetSpecializationInfoByID = function(id) return id, "Spec", "", 0, roles[id], "PALADIN", "Paladin" end
+  local f, sev = evaluate(I.plateChest, { name = "Pal", class = "PALADIN", level = 60, spec = 999 })
+  eq(sev, 3, "Strength plate on an unmapped healer spec")
+  expectFinding(f, 3, "(Strength) don't suit a Paladin")
+  local _, sev2 = evaluate(I.plateChest, { name = "Pal", class = "PALADIN", level = 60, spec = 998 })
+  eq(sev2, 0, "unmapped damage spec falls back to the class-wide set")
+end)
+
+test("stats: a resist-only item isn't Caster (deviation D-2)", function()
+  local resistPlate = S.AddItem { id = 3013, name = "Warded Breastplate", classID = ARMOR, subclassID = PLATE,
+    subType = "Plate", equipLoc = "INVTYPE_CHEST", ilvl = 60, minLevel = 55,
+    stats = { ITEM_MOD_SPELL_RESISTANCE_ALL_SCHOOLS_SHORT = 10, ITEM_MOD_CRIT_TAKEN_SPELL_RATING_SHORT = 5,
+              ITEM_MOD_STAMINA_SHORT = 12 } }
+  local f, sev = evaluate(resistPlate, { name = "Bob", class = "WARRIOR", level = 60 })
+  eq(sev, 0, "resist-only plate on a warrior " .. dump(f))
+end)
+
+test("BoE note is added to a Medium-only finding", function()
+  local boeHelm = S.AddItem { id = 3014, name = "Cowl of Resale", classID = ARMOR, subclassID = CLOTH,
+    subType = "Cloth", equipLoc = "INVTYPE_HEAD", ilvl = 50, minLevel = 45, bind = 2,
+    stats = { ITEM_MOD_INTELLECT_SHORT = 10 } }
+  local f, sev = evaluate(boeHelm, { name = "Zap", class = "MAGE", level = 60, items = { [1] = I.clothHelm63 } })
+  eq(sev, 2, "Medium only")
+  expectFinding(f, 2, "not an upgrade: item level 50")
+  expectFinding(f, 1, "Bind on Equip, so it could be resold")
+  eq(#f, 2, "exactly the Medium finding and the BoE note")
+end)
+
 -- Pattern building ---------------------------------------------------------
 
 local REAL_NEED_PAT    = "^|HlootHistory:(%d+)|h%[Loot%]|h: (.+) has selected Need for: (.+)$"
@@ -412,6 +542,8 @@ test("Need select + result lines alert once; again after 60 s", function()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   S.fire("CHAT_MSG_LOOT", ROLLED(77, I.spellDagger, "Bob"))
   eq(S.chatCount("rolled NEED"), 1, "alerts")
+  eq(S.chatCount("Bob|r rolled NEED on " .. I.spellDagger .. " - may be griefing loot"), 1, "headline wording")
+  eq(S.chatCount("[High]|r stats/effects (Intellect, spell power/healing) don't suit a Warrior"), 1, "[High] line")
   eq(S.sounds, 1, "sounds")
   eq(#S.banners, 1, "banners")
   eq(#ns.db.log, 1, "log entries")
@@ -439,16 +571,24 @@ test("no alert: own roll, below threshold, disabled, secret, not grouped", funct
   eq(S.chatCount("rolled NEED"), 1, "alerts")
 end)
 
-test("uncached item: retried, then alerts once cached", function()
+test("uncached item: the retry itself alerts once the item is cached", function()
   party()
-  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate))
-  eq(S.chatCount("rolled NEED"), 0, "no alert before cache")
-  ok(S.loadRequests >= 1, "requested item data")
-  S.advance(1)
-  eq(S.chatCount("rolled NEED"), 0, "warrior fits plate")
   S.units.party1.class = "MAGE"
-  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate))
-  eq(S.chatCount("rolled NEED"), 1, "mage on cached plate")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate)) -- the only chat line
+  eq(S.chatCount("rolled NEED"), 0, "no alert before cache")
+  eq(S.loadRequests, 1, "requested item data")
+  S.advance(1)
+  eq(S.chatCount("rolled NEED"), 1, "alert from the 1 s retry")
+  eq(S.chatCount("item info not loaded"), 0, "item was loaded: full checks ran")
+end)
+
+test("never-cached item: alert says only type checks ran", function()
+  party()
+  S.units.party1.class = "MAGE"
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.neverCachedPlate))
+  S.advance(3)
+  eq(S.chatCount("rolled NEED"), 1, "alert")
+  eq(S.chatCount("(item info not loaded; only type checks ran)"), 1, "not-loaded note")
 end)
 
 test("never-cached item: judged after 3 retries with instant info", function()
@@ -473,6 +613,18 @@ test("announce goes to PARTY, also when LE_PARTY_CATEGORY_INSTANCE is missing", 
   eq(#S.sent, 2, "sent")
   eq(S.sent[2].channel, "PARTY", "channel without constant")
   ok(not S.sent[1].msg:lower():find("ninja", 1, true), "wording")
+  eq(S.sent[1].msg, "[AntiGrief] Bob's Need on " .. I.spellDagger
+    .. " doesn't look like a fit: stats/effects (Intellect, spell power/healing) don't suit a Warrior", "announce text")
+end)
+
+test("alert lines: [High] first, then [Low] notes, in spec format", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58)) -- cloth Int robe on a warrior
+  local n = #S.chat
+  eq(S.chat[n - 3], "|cff40c0ffAntiGrief|r: |cffff4040Bob|r rolled NEED on " .. I.robe58 .. " - may be griefing loot", "headline")
+  eq(S.chat[n - 2], "   |cffff4040[High]|r stats/effects (Intellect) don't suit a Warrior", "[High] line")
+  eq(S.chat[n - 1], "   |cffd0d070[Low]|r Cloth is a lower armor type than a Warrior normally wears", "[Low] line")
+  eq(S.chat[n], "   |cff999999(gear not scanned yet; upgrade check skipped)|r", "unscanned note")
 end)
 
 test("log keeps the newest 50", function()
@@ -492,7 +644,8 @@ test("drop hints list who an item fits", function()
   ns.db.hints = true
   S.rolls[7] = I.robe58
   S.fire("START_LOOT_ROLL", 7)
-  eq(S.chatCount("fits: Me"), 1, "hint line")
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: " .. I.robe58 .. " fits: Me", "exact hint line")
+  eq(S.chatCount("Bob"), 0, "Bob (Warrior, cloth Int robe) not listed")
 end)
 
 -- Inspect queue ------------------------------------------------------------
@@ -585,6 +738,103 @@ test("inspect: UNIT_INVENTORY_CHANGED re-queues a member", function()
   S.fire("UNIT_INVENTORY_CHANGED", "partypet1")
   _, _, queued = ns.Inspect.Status()
   eq(queued, 1, "pets ignored")
+end)
+
+local function scanBob()
+  S.advance(0.5)
+  eq(S.notified[#S.notified], "party1", "inspected Bob")
+  S.fire("INSPECT_READY", GUID.bob)
+  ok(ns.Inspect.cache[GUID.bob], "Bob cached")
+end
+
+local function queuedCount()
+  local _, _, q = ns.Inspect.Status()
+  return q
+end
+
+test("inspect: paused while Blizzard's InspectFrame is shown", function()
+  party()
+  S.inspectFrameShown = true
+  S.advance(5)
+  eq(#S.notified, 0, "no inspect while the Inspect window is open")
+  S.inspectFrameShown = false
+  S.advance(0.5)
+  eq(#S.notified, 1, "inspect once it closes")
+end)
+
+test("inspect: an open InspectFrame isn't cleared under the player", function()
+  party()
+  S.advance(0.5)
+  S.inspectFrameShown = true -- player opened Inspect while our request was out
+  S.fire("INSPECT_READY", GUID.bob)
+  ok(ns.Inspect.cache[GUID.bob], "still cached")
+  eq(S.cleared, 0, "ClearInspectPlayer not called while the window is open")
+end)
+
+test("inspect: 1.5 s gap between requests to two members", function()
+  party({ party2 = { guid = GUID.ann, name = "Ann", class = "PRIEST", level = 60, items = {} } })
+  S.advance(0.5)                 -- t = 1000.5: Bob
+  eq(#S.notified, 1, "first request")
+  S.fire("INSPECT_READY", GUID.bob) -- answered at once, so nothing is pending
+  S.advance(0.5)                 -- +0.5 s
+  eq(#S.notified, 1, "no request 0.5 s later")
+  S.advance(0.5)                 -- +1.0 s
+  eq(#S.notified, 1, "no request 1.0 s later")
+  S.advance(0.5)                 -- +1.5 s
+  eq(#S.notified, 2, "second request at +1.5 s")
+  eq(S.notified[2], "party2", "Ann")
+end)
+
+test("inspect: offline member is re-queued with a cooldown", function()
+  party()
+  S.units.party1.offline = true
+  S.advance(0.5)
+  eq(#S.notified, 0, "offline: not inspected")
+  eq(queuedCount(), 1, "back in the queue")
+  S.units.party1.offline = false
+  S.advance(5)
+  eq(#S.notified, 0, "cooldown still running at +5 s")
+  S.advance(3.5)
+  eq(#S.notified, 1, "inspected after the 8 s cooldown")
+end)
+
+test("inspect: CanInspect false is re-queued with a cooldown", function()
+  party()
+  S.units.party1.noInspect = true
+  S.advance(0.5)
+  eq(#S.notified, 0, "CanInspect false: not inspected")
+  eq(queuedCount(), 1, "back in the queue")
+  S.units.party1.noInspect = false
+  S.advance(8.5)
+  eq(#S.notified, 1, "inspected after the cooldown")
+end)
+
+test("inspect: UNIT_INVENTORY_CHANGED re-scan at most every 30 s", function()
+  party()
+  scanBob()                                  -- t = 1000.5
+  S.fire("UNIT_INVENTORY_CHANGED", "party1") -- first change: queued
+  eq(queuedCount(), 1, "first change queues")
+  S.advance(2)                               -- re-scan goes out and is answered
+  S.fire("INSPECT_READY", GUID.bob)
+  eq(queuedCount(), 0, "re-scanned")
+  S.fire("UNIT_INVENTORY_CHANGED", "party1") -- 2 s after the first: throttled
+  eq(queuedCount(), 0, "second change within 30 s ignored")
+  S.advance(29)                              -- 31 s after the first
+  S.fire("UNIT_INVENTORY_CHANGED", "party1")
+  eq(queuedCount(), 1, "change after 30 s queues again")
+end)
+
+test("inspect: cached gear is re-scanned after 10 minutes", function()
+  party()
+  scanBob()                       -- cached at t = 1000.5
+  S.fire("GROUP_ROSTER_UPDATE")
+  eq(queuedCount(), 0, "fresh cache not re-queued")
+  S.advance(598)                  -- age 598 s
+  S.fire("GROUP_ROSTER_UPDATE")
+  eq(queuedCount(), 0, "under 10 minutes: not re-queued")
+  S.advance(2)                    -- age 600 s
+  S.fire("GROUP_ROSTER_UPDATE")
+  eq(queuedCount(), 1, "stale after 10 minutes: re-queued")
 end)
 
 -- Spec reading (C_SpecializationInfo via D.PlayerSpecID / D.InspectSpecID) -
@@ -763,6 +1013,29 @@ test("pawn: uncached item -> nil score -> item-level fallback", function()
   eq(sev, 2, "item-level Medium still applies")
 end)
 
+test("pawn: 1-19% worse under every class scale -> Medium", function()
+  fakePawn({
+    [1011] = { ['"Classic":WARRIOR1'] = { 36, 36 }, ['"Classic":WARRIOR2'] = { 27, 27 } },
+    [1001] = { ['"Classic":WARRIOR1'] = { 40, 40 }, ['"Classic":WARRIOR2'] = { 30, 30 } },
+  })
+  PawnIsInitialized = true
+  local f, sev = evaluate(I.plateChestBoE, { name = "Bob", class = "WARRIOR", level = 60, items = { [5] = I.plateChest } })
+  eq(sev, 2, "maxSev " .. dump(f))
+  expectFinding(f, 2, "Pawn scores it 10% below their current Chest under every Warrior spec")
+  expectFinding(f, 1, "Bind on Equip") -- BoE note follows the Medium finding
+end)
+
+test("pawn: custom scales without the \"Classic\":CLASSn shape are excluded", function()
+  fakePawn({
+    [1015] = { ['"Classic":WARRIOR1'] = { 0, 0 }, ['"Classic":WARRIOR2'] = { 0, 0 },
+               ["My custom WARRIOR scale"] = { 100, 100 } },
+  })
+  PawnIsInitialized = true
+  eq(ns.Rules.PawnBestScore(I.leatherChest, "WARRIOR"), 0, "custom scale's 100 ignored")
+  local f = evaluate(I.leatherChest, { name = "Bob", class = "WARRIOR", level = 60 })
+  expectFinding(f, 3, "no value under any Warrior Pawn scale")
+end)
+
 -- Slash commands and settings ------------------------------------------------
 
 test("slash commands run without errors", function()
@@ -799,6 +1072,20 @@ test("/ag test solo and with a nameless member doesn't error", function()
   party({ party2 = { guid = GUID.zap, name = "Zap", noName = true, class = "MAGE", level = 60 } })
   SlashCmdList.ANTIGRIEF("test " .. I.plateChest)
   ok(S.chatCount("?: ") == 1, "nameless member shown as ?")
+end)
+
+test("saved settings: all eight spec defaults on a fresh DB", function()
+  local db = ns.db
+  eq(db, AntiGriefDB, "db bound to the SavedVariable")
+  eq(db.enabled, true, "enabled")
+  eq(db.minSeverity, 2, "minSeverity")
+  eq(db.sound, true, "sound")
+  eq(db.screen, true, "screen")
+  eq(db.announce, false, "announce")
+  eq(db.hints, false, "hints")
+  eq(db.upgradeMargin, 8, "upgradeMargin")
+  eq(db.usePawn, true, "usePawn")
+  eq(type(db.log), "table", "log"); eq(#db.log, 0, "log empty")
 end)
 
 test("saved settings: defaults merged, user values kept, corrupt values fixed", function()

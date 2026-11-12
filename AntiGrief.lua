@@ -153,7 +153,7 @@ local function DedupeKey(who, link)
   return (who.guid or who.name or "?") .. "|" .. item
 end
 
-local function Alert(who, link, findings, maxSev)
+local function Alert(who, link, findings, maxSev, itemNotLoaded)
   if not findings or #findings == 0 or not D.SEV_COLOR[maxSev] then return end
   local now = GetTime()
   PruneOlder(recent, now, DEDUPE_WINDOW)
@@ -167,6 +167,7 @@ local function Alert(who, link, findings, maxSev)
   for _, f in ipairs(findings) do
     Line(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
   end
+  if itemNotLoaded then Line("|cff999999(item info not loaded; only type checks ran)|r") end
   if not who.items then Line("|cff999999(gear not scanned yet; upgrade check skipped)|r") end
 
   if ns.db.screen then
@@ -205,11 +206,13 @@ local function Judge(name, link, attempt)
     return
   end
   -- Cached now, or out of retries: judge with what we have (type checks
-  -- only need GetItemInfoInstant)
+  -- only need GetItemInfoInstant; level, stat and upgrade data stay nil)
   local who = Inspect.Who(unit)
   if not who then return end
   local findings, maxSev = Rules.Evaluate(link, who)
-  if findings and maxSev >= (ns.db.minSeverity or 2) then Alert(who, link, findings, maxSev) end
+  if findings and maxSev >= (ns.db.minSeverity or 2) then
+    Alert(who, link, findings, maxSev, not D.GetItemInfo(link))
+  end
 end
 
 local function OnLootMessage(msg)
