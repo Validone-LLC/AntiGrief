@@ -11,21 +11,40 @@ end
 local function path(p) return root .. "/" .. p end
 
 local ADDON = "AntiGrief"
-local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "AntiGrief.lua" }
+-- Same order as AntiGrief.toc
+local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "Config.lua", "AntiGrief.lua" }
+-- Config.lua (the options panel) is written separately; while it isn't in
+-- the repo the suite runs without it.
+local OPTIONAL = { ["Config.lua"] = true }
+
+local function exists(p)
+  local fh = io.open(p, "r")
+  if fh then fh:close() return true end
+  return false
+end
+local HAS_CONFIG = exists(path("Config.lua"))
+if not HAS_CONFIG then print("NOTE  Config.lua not found: loading the addon without it\n") end
 
 local S, ns
+
+-- Load the addon files in TOC order into a fresh namespace
+local function loadAddon()
+  ns = {}
+  for _, f in ipairs(TOC) do
+    if not (OPTIONAL[f] and not exists(path(f))) then
+      local chunk, err = loadfile(path(f))
+      if not chunk then error("load " .. f .. ": " .. tostring(err), 0) end
+      chunk(ADDON, ns)
+    end
+  end
+end
 
 -- setup(S), if given, runs after the stub loads and before the addon files
 -- (for load-time state such as the client locale)
 local function fresh(setup)
   S = assert(loadfile(path("tests/wowstub.lua")))()
   if setup then setup(S) end
-  ns = {}
-  for _, f in ipairs(TOC) do
-    local chunk, err = loadfile(path(f))
-    if not chunk then error("load " .. f .. ": " .. tostring(err), 0) end
-    chunk(ADDON, ns)
-  end
+  loadAddon()
   S.fire("ADDON_LOADED", ADDON)
 end
 
@@ -639,13 +658,15 @@ test("log keeps the newest 50", function()
   ok(ns.db.log[1].item:find("Plate 55", 1, true), "newest first")
 end)
 
-test("drop hints list who an item fits", function()
+test("drop report is on by default and lists every member, the player included", function()
   party()
-  ns.db.hints = true
   S.rolls[7] = I.robe58
   S.fire("START_LOOT_ROLL", 7)
-  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: " .. I.robe58 .. " fits: Me", "exact hint line")
-  eq(S.chatCount("Bob"), 0, "Bob (Warrior, cloth Int robe) not listed")
+  local n = #S.chat
+  eq(S.chat[n - 2], "|cff40c0ffAntiGrief|r: new drop: " .. I.robe58, "header")
+  eq(S.chat[n - 1], "   |cff40ff40Me (Mage): fits|r", "player line")
+  eq(S.chat[n], "   |cffff4040Bob (Warrior): High - stats/effects (Intellect) don't suit a Warrior|r |cff999999(not scanned)|r",
+    "unscanned Bob")
 end)
 
 -- Inspect queue ------------------------------------------------------------
@@ -1054,7 +1075,7 @@ test("slash commands run without errors", function()
   cmd("gear nobody"); ok(S.chatCount("no group member named nobody") == 1, "gear unknown")
   cmd("gear bob"); ok(S.chatCount("hasn't been scanned yet") == 1, "gear unscanned (case-insensitive)")
   cmd("test look at " .. I.plateChest .. " please")
-  ok(S.chatCount("Me: ") == 1, "test verdict for me")
+  ok(S.chatCount("Me (Mage): ") == 1, "test verdict for me")
   cmd("test nothing"); ok(S.chatCount("usage: /ag test") == 1, "test usage")
   cmd("off"); eq(ns.db.enabled, false, "off")
   cmd("on"); eq(ns.db.enabled, true, "on")
@@ -1068,10 +1089,10 @@ end)
 test("/ag test solo and with a nameless member doesn't error", function()
   S.SetGroup({ player = { guid = GUID.me, name = "Me", class = "MAGE", level = 60, items = {} } }, nil)
   SlashCmdList.ANTIGRIEF("test " .. I.plateChest)
-  ok(S.chatCount("Me: ") == 1, "solo verdict")
+  ok(S.chatCount("Me (Mage): ") == 1, "solo verdict")
   party({ party2 = { guid = GUID.zap, name = "Zap", noName = true, class = "MAGE", level = 60 } })
   SlashCmdList.ANTIGRIEF("test " .. I.plateChest)
-  ok(S.chatCount("?: ") == 1, "nameless member shown as ?")
+  ok(S.chatCount("? (Mage): ") == 1, "nameless member shown as ?")
 end)
 
 test("saved settings: all eight spec defaults on a fresh DB", function()
@@ -1082,7 +1103,8 @@ test("saved settings: all eight spec defaults on a fresh DB", function()
   eq(db.sound, true, "sound")
   eq(db.screen, true, "screen")
   eq(db.announce, false, "announce")
-  eq(db.hints, false, "hints")
+  eq(db.dropReport, true, "dropReport (replaces hints)")
+  eq(db.hints, nil, "no hints key")
   eq(db.upgradeMargin, 8, "upgradeMargin")
   eq(db.usePawn, true, "usePawn")
   eq(type(db.log), "table", "log"); eq(#db.log, 0, "log empty")
@@ -1092,8 +1114,7 @@ test("saved settings: defaults merged, user values kept, corrupt values fixed", 
   -- reload with an existing DB
   S = assert(loadfile(path("tests/wowstub.lua")))()
   AntiGriefDB = { sound = false, minSeverity = 7, upgradeMargin = "x", log = "bad" }
-  ns = {}
-  for _, f in ipairs(TOC) do assert(loadfile(path(f)))(ADDON, ns) end
+  loadAddon()
   S.fire("ADDON_LOADED", "SomeOtherAddon")
   eq(ns.db, nil, "ignores other addons")
   S.fire("ADDON_LOADED", ADDON)
@@ -1104,6 +1125,357 @@ test("saved settings: defaults merged, user values kept, corrupt values fixed", 
   eq(type(ns.db.log), "table", "log fixed")
   eq(ns.db.enabled, true, "default filled")
 end)
+
+-- Drop report (START_LOOT_ROLL) ---------------------------------------------
+
+local function linesSince(n0)
+  local t = {}
+  for i = n0 + 1, #S.chat do t[#t + 1] = S.chat[i] end
+  return t
+end
+
+local function roll(id, link)
+  S.rolls[id] = link
+  local n0 = #S.chat
+  S.fire("START_LOOT_ROLL", id)
+  return linesSince(n0)
+end
+
+test("drop report: party lines for fits, High, Medium and not scanned", function()
+  party({ party2 = { guid = GUID.ann, name = "Ann", class = "PRIEST", level = 60, items = {} } })
+  scanBob() -- Bob scanned; Ann not
+  local out = roll(7, I.robe58)
+  eq(#out, 4, "header + 3 members")
+  eq(out[1], "|cff40c0ffAntiGrief|r: new drop: " .. I.robe58, "header")
+  eq(out[2], "   |cff40ff40Me (Mage): fits|r", "player fits")
+  -- Bob's findings are [Low] cloth note first, [High] stats second: the High one is shown
+  eq(out[3], "   |cffff4040Bob (Warrior): High - stats/effects (Intellect) don't suit a Warrior|r", "scanned Bob")
+  eq(out[4], "   |cff40ff40Ann (Priest): fits|r |cff999999(not scanned)|r", "unscanned Ann")
+  -- the player is judged on the gear they're wearing (never in the inspect cache)
+  out = roll(8, I.clothHelm52)
+  eq(out[2], "   |cffff9930Me (Mage): Medium - not an upgrade: item level 52 vs their " .. I.clothHelm63:sub(1, -3)
+    .. "|r|cffff9930 (item level 63)|r", "player's own helm; colour resumes after the link")
+end)
+
+-- Raid of n members: raid1 is the player (Mage); `fitCount` warriors, the rest mages
+local function raid(n, fitCount)
+  local units = {}
+  for i = 1, n do
+    local isWarrior = i > 1 and i <= fitCount + 1
+    units["raid" .. i] = { guid = "Player-1-1" .. i, name = (i == 1) and "Me" or ((isWarrior and "W" or "M") .. i),
+      class = isWarrior and "WARRIOR" or "MAGE", level = 60, items = {} }
+  end
+  units.player = units.raid1
+  S.SetGroup(units, "raid")
+  S.fire("GROUP_ROSTER_UPDATE")
+end
+
+test("drop report: raid collapses to a fits line and caps the rest", function()
+  eq(ns._test.DROP_REPORT_MAX, 10, "cap constant")
+  raid(14, 2) -- 2 warriors fit plate; 12 mages (the player included) don't
+  local out = roll(1, I.plateChest)
+  eq(#out, 13, "header + fits line + 10 + 'more'")
+  eq(out[1], "|cff40c0ffAntiGrief|r: new drop: " .. I.plateChest, "header")
+  eq(out[2], "   |cff40ff40fits: W2, W3|r", "fits line")
+  eq(out[3], "   |cffff4040Me (Mage): High - Mage can't use Plate|r", "first misfit")
+  for i = 3, 12 do ok(out[i]:find("(Mage): High", 1, true), "misfit line " .. i) end
+  eq(out[13], "   |cff999999...and 2 more|r", "overflow line")
+end)
+
+test("drop report: exactly 10 members get one line each; nobody fits shows 'nobody'", function()
+  raid(10, 3)
+  local out = roll(1, I.plateChest)
+  eq(#out, 11, "header + 10 member lines")
+  eq(out[2], "   |cffff4040Me (Mage): High - Mage can't use Plate|r", "no collapse")
+  raid(11, 0)
+  out = roll(2, I.plateChest)
+  eq(out[2], "   |cff40ff40fits: nobody|r", "nobody fits")
+  eq(#out, 13, "header + fits + 10 + 'more'")
+  eq(out[13], "   |cff999999...and 1 more|r", "overflow")
+end)
+
+test("drop report: items AntiGrief doesn't judge print nothing", function()
+  party()
+  eq(#roll(3, I.potion), 0, "potion")
+  eq(#roll(4, I.shirt), 0, "shirt")
+  eq(#roll(5, nil), 0, "no link")
+end)
+
+test("drop report: uncached item retried 1 s later, then reported", function()
+  party()
+  eq(#roll(9, I.uncachedPlate), 0, "nothing while uncached")
+  eq(S.loadRequests, 1, "item data requested")
+  local n0 = #S.chat
+  S.advance(1)
+  local out = linesSince(n0)
+  eq(out[1], "|cff40c0ffAntiGrief|r: new drop: " .. I.uncachedPlate, "report from the retry")
+  eq(#out, 3, "header + 2 members")
+end)
+
+test("drop report: never-cached item gives up silently after 3 retries", function()
+  party()
+  local n0 = #S.chat
+  roll(10, I.neverCachedPlate)
+  S.advance(10)
+  eq(#S.chat, n0, "nothing printed")
+  eq(S.loadRequests, 3, "three load requests")
+end)
+
+test("drop report: one report per rollID, also across retries", function()
+  party()
+  eq(#roll(11, I.robe58), 3, "first report")
+  eq(#roll(11, I.robe58), 0, "same rollID again")
+  eq(#roll(12, I.robe58), 3, "a new rollID with the same item reports")
+  roll(13, I.uncachedPlate)
+  roll(13, I.uncachedPlate) -- fired twice while still uncached
+  S.advance(5)
+  eq(S.chatCount("new drop: " .. I.uncachedPlate), 1, "one report for the retried roll")
+end)
+
+test("drop report: off with dropReport=false or enabled=false, also mid-retry", function()
+  party()
+  ns.db.dropReport = false
+  eq(#roll(14, I.robe58), 0, "dropReport off")
+  ns.db.dropReport, ns.db.enabled = true, false
+  eq(#roll(15, I.robe58), 0, "addon off")
+  ns.db.enabled = true
+  roll(16, I.uncachedPlate)
+  ns.db.dropReport = false
+  S.advance(3)
+  eq(S.chatCount("new drop:"), 0, "dropReport turned off during the retry")
+  ns.db.dropReport = true
+  local slow2 = S.AddItem { id = 4001, name = "Slower Breastplate", classID = ARMOR, subclassID = PLATE,
+    subType = "Plate", equipLoc = "INVTYPE_CHEST", ilvl = 66, minLevel = 60, uncached = true }
+  eq(#roll(18, slow2), 0, "uncached")
+  ns.db.enabled = false
+  S.advance(3)
+  eq(S.chatCount("new drop:"), 0, "addon turned off during the retry")
+end)
+
+test("drop report: private; never sent to chat, no banner, sound or log", function()
+  party()
+  ns.db.announce = true
+  roll(17, I.plateChest) -- High for the mage player
+  eq(S.chatCount("new drop:"), 1, "reported")
+  eq(#S.sent, 0, "nothing sent to the group")
+  eq(#S.banners, 0, "no banner"); eq(S.sounds, 0, "no sound"); eq(#ns.db.log, 0, "not logged")
+end)
+
+test("/ag test: exact lines through the shared formatter", function()
+  party()
+  local n0 = #S.chat
+  SlashCmdList.ANTIGRIEF("test " .. I.robe58)
+  local out = linesSince(n0)
+  eq(out[1], "|cff40c0ffAntiGrief|r: |cff40ff40Me (Mage): fits|r", "player")
+  eq(out[2], "|cff40c0ffAntiGrief|r: |cffff4040Bob (Warrior): High - stats/effects (Intellect) don't suit a Warrior|r"
+    .. " |cff999999(not scanned)|r", "Bob verdict")
+  eq(out[3], "   [Low] Cloth is a lower armor type than a Warrior normally wears", "Bob finding 1")
+  eq(out[4], "   [High] stats/effects (Intellect) don't suit a Warrior", "Bob finding 2")
+  eq(#out, 4, "line count")
+  n0 = #S.chat
+  SlashCmdList.ANTIGRIEF("test " .. I.potion)
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: AntiGrief doesn't judge this item (not equippable gear)", "non-gear")
+  eq(#S.chat, n0 + 1, "one line")
+end)
+
+-- Settings migration and slash toggles -----------------------------------
+
+local function reloadWith(db)
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  AntiGriefDB = db
+  loadAddon()
+  S.fire("ADDON_LOADED", ADDON)
+  items()
+end
+
+test("saved settings: old hints=false doesn't carry over; the hints key is removed", function()
+  reloadWith({ hints = false, sound = false })
+  eq(ns.db.dropReport, true, "new key gets its default")
+  eq(ns.db.hints, nil, "hints removed")
+  eq(AntiGriefDB.hints, nil, "removed from the SavedVariable")
+  eq(ns.db.sound, false, "other user values kept")
+  reloadWith({ hints = true, dropReport = false })
+  eq(ns.db.dropReport, false, "a saved dropReport=false is kept")
+  eq(ns.db.hints, nil, "hints removed")
+end)
+
+test("/ag drops and /ag hints toggle dropReport; status and help mention it", function()
+  local cmd = SlashCmdList.ANTIGRIEF
+  cmd("drops"); eq(ns.db.dropReport, false, "drops off")
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: Drop report |cffff4040off|r", "message")
+  cmd("hints"); eq(ns.db.dropReport, true, "hints alias on")
+  cmd("DROPS"); eq(ns.db.dropReport, false, "case-insensitive")
+  eq(ns.db.hints, nil, "no hints key written")
+  cmd("status"); eq(S.chatCount("drop report |cffff4040off|r"), 1, "status line")
+  eq(S.chatCount("hints |c"), 0, "status no longer shows hints")
+  cmd("help")
+  eq(S.chatCount("/ag drops - toggle the fit report on new drops (alias: hints)"), 1, "help: drops")
+  eq(S.chatCount("/ag config - open the options panel"), 1, "help: config")
+end)
+
+-- Options panel hooks (ns.Config replaced by a recorder) ---------------------
+
+local function fakeConfig()
+  local rec = { init = 0, open = 0, refresh = {} }
+  ns.Config = {
+    Init = function() rec.init = rec.init + 1 end,
+    Open = function() rec.open = rec.open + 1 end,
+    Refresh = function(key) rec.refresh[#rec.refresh + 1] = key end,
+  }
+  return rec
+end
+
+test("config: Init runs once at ADDON_LOADED, after the settings are loaded", function()
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  loadAddon()
+  local calls, sawDB = 0, nil
+  ns.Config = { Init = function() calls = calls + 1; sawDB = ns.db end }
+  S.fire("ADDON_LOADED", "SomeOtherAddon")
+  eq(calls, 0, "not for other addons")
+  S.fire("ADDON_LOADED", ADDON)
+  S.fire("ADDON_LOADED", ADDON)
+  eq(calls, 1, "once")
+  ok(sawDB ~= nil and sawDB == AntiGriefDB, "settings loaded before Init")
+end)
+
+test("config: an error in Init is reported and the addon still starts", function()
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  loadAddon()
+  ns.Config = { Init = function() error("panel broke") end }
+  S.fire("ADDON_LOADED", ADDON)
+  eq(S.chatCount("options panel error:"), 1, "error reported")
+  eq(#ns._test.patterns, 3, "patterns built")
+  items()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("rolled NEED"), 1, "alerts still work")
+end)
+
+test("config: Init and /ag config are skipped without ns.Config", function()
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  loadAddon()
+  ns.Config = nil
+  S.fire("ADDON_LOADED", ADDON)
+  ok(ns.db, "loaded")
+  SlashCmdList.ANTIGRIEF("config")
+  eq(S.chatCount("commands:"), 1, "falls back to the command list")
+end)
+
+test("/ag config and /ag options call Config.Open; fallback when Open is missing", function()
+  local rec = fakeConfig()
+  SlashCmdList.ANTIGRIEF("config")
+  SlashCmdList.ANTIGRIEF("options")
+  eq(rec.open, 2, "Open called")
+  eq(S.chatCount("commands:"), 0, "no help when Open exists")
+  ns.Config = { Refresh = function() end }
+  SlashCmdList.ANTIGRIEF("config")
+  eq(S.chatCount("commands:"), 1, "help when Open is missing")
+end)
+
+test("slash changes call Config.Refresh with the changed key", function()
+  local rec = fakeConfig()
+  local cmd = SlashCmdList.ANTIGRIEF
+  for _, c in ipairs({ "off", "on", "sev 3", "margin 5", "sound", "screen", "announce", "drops", "hints", "pawn" }) do
+    cmd(c)
+  end
+  eq(table.concat(rec.refresh, ","),
+    "enabled,enabled,minSeverity,upgradeMargin,sound,screen,announce,dropReport,dropReport,usePawn", "keys")
+  rec.refresh = {}
+  for _, c in ipairs({ "sev 9", "margin -1", "margin x", "status", "scan", "log", "clear", "help", "test nothing" }) do
+    cmd(c)
+  end
+  eq(#rec.refresh, 0, "no Refresh for rejected input or read-only commands")
+end)
+
+test("a client without the Settings API loads and runs /ag config", function()
+  fresh(function() Settings = nil end)
+  items()
+  party()
+  SlashCmdList.ANTIGRIEF("config")
+  if HAS_CONFIG then
+    eq(S.chatCount("the options page isn't available on this client"), 1, "Config.Open explains")
+  else
+    eq(S.chatCount("commands:"), 1, "no Config.lua: command list")
+  end
+  SlashCmdList.ANTIGRIEF("drops")
+  eq(ns.db.dropReport, false, "toggle still works")
+  roll(20, I.robe58)
+end)
+
+-- Config.lua itself (against the Settings stub) ------------------------------
+
+if HAS_CONFIG then
+  local EXPECTED = {
+    { "enabled", "checkbox", "boolean" }, { "minSeverity", "dropdown", "number" },
+    { "sound", "checkbox", "boolean" }, { "screen", "checkbox", "boolean" },
+    { "announce", "checkbox", "boolean" }, { "dropReport", "checkbox", "boolean" },
+    { "upgradeMargin", "slider", "number" }, { "usePawn", "checkbox", "boolean" },
+  }
+
+  local function settingFor(key)
+    for _, c in ipairs(S.cfg.controls) do
+      if c.setting.key == key then return c.setting end
+    end
+  end
+
+  test("Config.lua: Init registers all eight controls bound to the right ns.db keys", function()
+    eq(#S.cfg.categories, 1, "one category")
+    eq(S.cfg.addOnCategories[1], S.cfg.categories[1], "registered as an addon category")
+    eq(#S.cfg.addOnCategories, 1, "registered once")
+    eq(#S.cfg.controls, 8, "controls")
+    local vars = {}
+    for i, want in ipairs(EXPECTED) do
+      local c = S.cfg.controls[i]
+      eq(c.setting.key, want[1], "control " .. i .. " key")
+      eq(c.kind, want[2], want[1] .. " kind")
+      eq(c.setting.varType, want[3], want[1] .. " type")
+      eq(c.setting.tbl, ns.db, want[1] .. " bound to ns.db")
+      eq(type(ns.db[want[1]]), want[3], want[1] .. " stored type matches")
+      ok(not vars[c.setting.variable], "unique variable " .. tostring(c.setting.variable))
+      vars[c.setting.variable] = true
+    end
+    local sev = settingFor("minSeverity")
+    local dd
+    for _, c in ipairs(S.cfg.controls) do if c.kind == "dropdown" then dd = c end end
+    local choices = dd.options()
+    eq(#choices, 3, "severity choices"); eq(choices[1].value, 1, "Low"); eq(choices[3].value, 3, "High")
+    eq(sev:GetDefaultValue(), 2, "severity default")
+    local slider
+    for _, c in ipairs(S.cfg.controls) do if c.kind == "slider" then slider = c end end
+    eq(slider.options.min, 0, "slider min"); eq(slider.options.max, 30, "slider max")
+  end)
+
+  test("Config.lua: the panel reads live values and writes ns.db", function()
+    local cmd = SlashCmdList.ANTIGRIEF
+    cmd("sev 3"); eq(settingFor("minSeverity"):GetValue(), 3, "slash change visible to the panel")
+    cmd("drops"); eq(settingFor("dropReport"):GetValue(), false, "toggle visible to the panel")
+    eq(settingFor("dropReport").updates, 1, "Refresh notified the dropReport control")
+    eq(settingFor("minSeverity").updates, 1, "Refresh notified the severity control")
+    eq(settingFor("sound").updates, 0, "other controls untouched")
+    settingFor("announce"):SetValue(true); eq(ns.db.announce, true, "panel writes ns.db")
+    settingFor("upgradeMargin"):SetValue(6.6); eq(ns.db.upgradeMargin, 7, "slider value kept whole")
+    -- the drop report follows a panel change at once
+    settingFor("dropReport"):SetValue(true)
+    party()
+    eq(#roll(30, I.robe58), 3, "report after re-enabling in the panel")
+  end)
+
+  test("Config.lua: /ag config opens the category; not in combat", function()
+    SlashCmdList.ANTIGRIEF("config")
+    eq(#S.cfg.opened, 1, "opened")
+    eq(S.cfg.opened[1], S.cfg.categories[1]:GetID(), "our category")
+    S.combat = true
+    SlashCmdList.ANTIGRIEF("config")
+    eq(#S.cfg.opened, 1, "not opened in combat")
+    eq(S.chatCount("can't open the options in combat"), 1, "combat message")
+  end)
+
+  test("Config.lua: no Settings global -> nothing registered, no error", function()
+    fresh(function(s) Settings = nil; s.cfg.controls = {} end)
+    eq(#S.cfg.controls, 0, "no controls")
+    ok(ns.db and ns.db.enabled, "addon loaded")
+  end)
+end
 
 ---------------------------------------------------------------------------
 -- Run

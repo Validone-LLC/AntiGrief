@@ -11,4 +11,5 @@ Data.lua
 Inspect.lua
 Rules.lua
 Pawn.lua
+Config.lua
 AntiGrief.lua

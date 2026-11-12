@@ -5,13 +5,18 @@ local D, Inspect, Rules = ns.Data, ns.Inspect, ns.Rules
 
 local DEFAULTS = {
   enabled = true, minSeverity = 2, sound = true, screen = true,
-  announce = false, hints = false, upgradeMargin = 8, usePawn = true, log = {},
+  announce = false, dropReport = true, upgradeMargin = 8, usePawn = true, log = {},
 }
+-- Keys from older versions, removed from the saved settings on load.
+-- `hints` (off by default) was replaced by `dropReport` (on by default).
+local RETIRED_KEYS = { "hints" }
 
 local DEDUPE_WINDOW = 60  -- seconds; select line and result line alert once
 local LOG_MAX       = 50
 local LOAD_RETRIES  = 3   -- uncached item: retry this many times, 1 s apart
 local RESCAN_GAP    = 30  -- UNIT_INVENTORY_CHANGED re-scan at most this often
+local DROP_REPORT_MAX = 10   -- drop report: above this many members, collapse; cap on "doesn't fit" lines
+local ROLL_MEMORY     = 900  -- seconds a reported rollID is remembered (rolls last minutes)
 
 local PREFIX = "|cff40c0ffAntiGrief|r: "
 local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
@@ -21,6 +26,22 @@ local function Short(name)
   if type(name) ~= "string" then return "?" end
   return (Ambiguate and Ambiguate(name, "short")) or name
 end
+
+-- Calls ns.Config[method](...) if Config.lua provides it. An error in the
+-- panel code is reported (WoW's error handler) but never stops the caller.
+-- Returns true if the method exists.
+local function ConfigCall(method, ...)
+  local fn = ns.Config and ns.Config[method]
+  if type(fn) ~= "function" then return false end
+  local args, n = { ... }, select("#", ...)
+  local handler = (geterrorhandler and geterrorhandler())
+    or function(err) Print("options panel error: " .. tostring(err)) end
+  xpcall(function() fn(unpack(args, 1, n)) end, handler)
+  return true
+end
+
+-- Tell the options panel (if any) that a setting changed outside it
+local function Changed(key) ConfigCall("Refresh", key) end
 
 -- Remove entries of a name/guid -> timestamp table older than `age`
 local function PruneOlder(t, now, age)
@@ -223,21 +244,123 @@ local function OnLootMessage(msg)
   if ok and name and link then Judge(name, link) end
 end
 
-local function OnStartLootRoll(rollID)
-  if not ns.db or not ns.db.enabled or not ns.db.hints or not GetLootRollItemLink then return end
-  local link = GetLootRollItemLink(rollID)
-  if type(link) ~= "string" then return end
-  local fits = {}
-  for _, u in ipairs(ns.GroupUnits()) do
-    if UnitIsPlayer(u) then
-      local who = Inspect.Who(u)
-      if who then
-        local _, maxSev = Rules.Evaluate(link, who)
-        if maxSev and maxSev < D.MEDIUM then fits[#fits + 1] = Short(who.name) end
-      end
+---------------------------------------------------------------------------
+-- Group verdicts: shared by /ag test and the drop report
+---------------------------------------------------------------------------
+local FIT_COLOR  = "ff40ff40"
+local GREY_COLOR = "ff999999"
+
+-- Inspect.Who returns a fresh table; replacing `items` (not mutating it)
+-- keeps the inspect cache untouched. The player is judged on the gear
+-- they're wearing now.
+local function WhoWithOwnGear(unit)
+  local who = Inspect.Who(unit)
+  if who and UnitIsUnit(unit, "player") then
+    local items = {}
+    for _, slot in ipairs(D.INSPECT_SLOTS) do items[slot] = GetInventoryItemLink("player", slot) end
+    who.items = items
+  end
+  return who
+end
+
+-- Evaluate `link` for every group member (just the player when solo).
+-- Returns a list of { who, findings, maxSev }, or nil if AntiGrief doesn't
+-- judge the item (Rules.Evaluate returned nil for everyone).
+local function EvaluateGroup(link)
+  local units = ns.GroupUnits()
+  if #units == 0 then units = { "player" } end
+  local results = {}
+  for _, u in ipairs(units) do
+    local who = UnitIsPlayer(u) and WhoWithOwnGear(u)
+    if who then
+      local findings, maxSev = Rules.Evaluate(link, who)
+      if findings then results[#results + 1] = { who = who, findings = findings, maxSev = maxSev } end
     end
   end
-  if #fits > 0 then Print(("%s fits: %s"):format(link, table.concat(fits, ", "))) end
+  if #results == 0 then return nil end
+  return results
+end
+
+local function Fits(r) return r.maxSev < D.LOW end -- maxSev 0: no findings
+
+-- Highest-severity finding; the first one listed wins a tie
+local function TopFinding(findings)
+  local top
+  for _, f in ipairs(findings) do
+    if not top or f.sev > top.sev then top = f end
+  end
+  return top
+end
+
+-- One member's verdict: "Name (Class): fits" in green, or
+-- "Name (Class): High - <top finding>" in the severity colour, plus
+-- "(not scanned)" when their upgrade check was skipped.
+local function VerdictLine(r)
+  local who = r.who
+  local label = ("%s (%s)"):format(Short(who.name), D.ClassName(who.class))
+  local color, text
+  if Fits(r) then
+    color, text = FIT_COLOR, label .. ": fits"
+  else
+    local top = TopFinding(r.findings)
+    color = D.SEV_COLOR[r.maxSev]
+    -- an item link inside the finding ends with |r; resume the colour after it
+    text = ("%s: %s - %s"):format(label, D.SEV_NAME[r.maxSev], (top.text:gsub("|r", "|r|c" .. color)))
+  end
+  local line = ("|c%s%s|r"):format(color, text)
+  if not who.items then line = line .. (" |c%s(not scanned)|r"):format(GREY_COLOR) end
+  return line
+end
+
+---------------------------------------------------------------------------
+-- Drop report (START_LOOT_ROLL). Private: never sent to group chat.
+---------------------------------------------------------------------------
+local reportedRolls = {} -- rollID -> time reported
+
+local function PrintDropReport(link, results)
+  Print("new drop: " .. link)
+  if #results <= DROP_REPORT_MAX then
+    for _, r in ipairs(results) do Line(VerdictLine(r)) end
+    return
+  end
+  -- Big group: everyone it fits on one line, then capped lines for the rest
+  local fits, misfits = {}, {}
+  for _, r in ipairs(results) do
+    if Fits(r) then fits[#fits + 1] = Short(r.who.name) else misfits[#misfits + 1] = r end
+  end
+  Line(("|c%sfits: %s|r"):format(FIT_COLOR, #fits > 0 and table.concat(fits, ", ") or "nobody"))
+  for i = 1, math.min(#misfits, DROP_REPORT_MAX) do Line(VerdictLine(misfits[i])) end
+  if #misfits > DROP_REPORT_MAX then
+    Line(("|c%s...and %d more|r"):format(GREY_COLOR, #misfits - DROP_REPORT_MAX))
+  end
+end
+
+local function DropReport(rollID, link, attempt)
+  -- re-checked on every retry: settings may change and the roll may be reported
+  if not ns.db or not ns.db.enabled or not ns.db.dropReport then return end
+  if reportedRolls[rollID] then return end
+  if not D.GetItemInfo(link) then -- not cached yet
+    if attempt >= LOAD_RETRIES then return end -- never loaded: say nothing
+    local itemID = D.GetItemInfoInstant(link)
+    if itemID and C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, itemID) end
+    C_Timer.After(1, function() DropReport(rollID, link, attempt + 1) end)
+    return
+  end
+  local results = EvaluateGroup(link)
+  if not results then return end -- not gear AntiGrief judges
+  local now = GetTime()
+  PruneOlder(reportedRolls, now, ROLL_MEMORY)
+  reportedRolls[rollID] = now
+  PrintDropReport(link, results)
+end
+
+local function OnStartLootRoll(rollID)
+  if not ns.db or not ns.db.enabled or not ns.db.dropReport or not GetLootRollItemLink then return end
+  if rollID == nil or (issecretvalue and issecretvalue(rollID)) then return end
+  if reportedRolls[rollID] then return end
+  local ok, link = pcall(GetLootRollItemLink, rollID)
+  if not ok or type(link) ~= "string" or (issecretvalue and issecretvalue(link)) then return end
+  DropReport(rollID, link, 0)
 end
 
 local lastRescan = {}
@@ -257,31 +380,27 @@ local function OnOff(v) return v and "|cff40ff40on|r" or "|cffff4040off|r" end
 local function Toggle(key, label)
   ns.db[key] = not ns.db[key]
   Print(label .. " " .. OnOff(ns.db[key]))
-end
-
--- Inspect.Who returns a fresh table; replacing `items` (not mutating it)
--- keeps the inspect cache untouched.
-local function WhoForTest(unit)
-  local who = Inspect.Who(unit)
-  if who and UnitIsUnit(unit, "player") then
-    local items = {}
-    for _, slot in ipairs(D.INSPECT_SLOTS) do items[slot] = GetInventoryItemLink("player", slot) end
-    who.items = items
-  end
-  return who
+  Changed(key)
 end
 
 local HELP = {
   "/ag status - settings and scan progress",
+  "/ag config - open the options panel",
   "/ag on | off - enable or disable",
   "/ag scan - re-scan the group's gear",
   "/ag gear <name> - show a member's cached gear",
   "/ag test <shift-click item> - evaluate an item against the group",
   "/ag sev 1-3 - alert threshold (1 Low, 2 Medium, 3 High)",
   "/ag margin <n> - item-level gap for the upgrade check",
-  "/ag sound | screen | announce | hints | pawn - toggle",
+  "/ag drops - toggle the fit report on new drops (alias: hints)",
+  "/ag sound | screen | announce | pawn - toggle",
   "/ag log | clear - show or clear recent flags",
 }
+
+local function PrintHelp()
+  Print("commands:")
+  for _, h in ipairs(HELP) do Line(h) end
+end
 
 SLASH_ANTIGRIEF1 = "/antigrief"
 SLASH_ANTIGRIEF2 = "/ag"
@@ -294,15 +413,19 @@ SlashCmdList.ANTIGRIEF = function(input)
   if cmd == "on" or cmd == "off" then
     ns.db.enabled = (cmd == "on")
     Print("AntiGrief " .. OnOff(ns.db.enabled))
+    Changed("enabled")
 
   elseif cmd == "status" then
     local scanned, total, queued = Inspect.Status()
     local pawn = Rules.PawnAvailable and Rules.PawnAvailable()
     Print(("%s | alerts at %s+ | scanned %d/%d, %d queued"):format(
       OnOff(ns.db.enabled), D.SEV_NAME[ns.db.minSeverity] or "?", scanned, total, queued))
-    Line(("sound %s, banner %s, announce %s, hints %s, Pawn %s%s, margin %s"):format(
-      OnOff(ns.db.sound), OnOff(ns.db.screen), OnOff(ns.db.announce), OnOff(ns.db.hints),
+    Line(("sound %s, banner %s, announce %s, drop report %s, Pawn %s%s, margin %s"):format(
+      OnOff(ns.db.sound), OnOff(ns.db.screen), OnOff(ns.db.announce), OnOff(ns.db.dropReport),
       OnOff(ns.db.usePawn), pawn and "" or " (not loaded)", tostring(ns.db.upgradeMargin)))
+
+  elseif cmd == "config" or cmd == "options" then
+    if not ConfigCall("Open") then PrintHelp() end
 
   elseif cmd == "scan" then
     Inspect.QueueGroup(true)
@@ -324,33 +447,29 @@ SlashCmdList.ANTIGRIEF = function(input)
   elseif cmd == "test" then
     local link = ExtractItemLink(rest)
     if not link then Print("usage: /ag test <shift-click an item>"); return end
-    local units = ns.GroupUnits()
-    if #units == 0 then units = { "player" } end
-    for _, u in ipairs(units) do
-      local who = WhoForTest(u)
-      if who then
-        local findings, maxSev = Rules.Evaluate(link, who)
-        if not findings then Print("AntiGrief doesn't judge this item (not equippable gear)"); return end
-        local verdict = (maxSev == 0) and "|cff40ff40fits|r" or ("|c%s%s|r"):format(D.SEV_COLOR[maxSev], D.SEV_NAME[maxSev])
-        Print(("%s: %s"):format(Short(who.name), verdict))
-        for _, f in ipairs(findings) do Line(("[%s] %s"):format(D.SEV_NAME[f.sev], f.text)) end
-      end
+    local results = EvaluateGroup(link)
+    if not results then Print("AntiGrief doesn't judge this item (not equippable gear)"); return end
+    for _, r in ipairs(results) do
+      Print(VerdictLine(r))
+      for _, f in ipairs(r.findings) do Line(("[%s] %s"):format(D.SEV_NAME[f.sev], f.text)) end
     end
 
   elseif cmd == "sev" then
     local n = tonumber(rest)
-    if n and D.SEV_NAME[n] then ns.db.minSeverity = n; Print("alerts at " .. D.SEV_NAME[n] .. "+")
+    if n and D.SEV_NAME[n] then
+      ns.db.minSeverity = n; Print("alerts at " .. D.SEV_NAME[n] .. "+"); Changed("minSeverity")
     else Print("usage: /ag sev 1-3") end
 
   elseif cmd == "margin" then
     local n = tonumber(rest)
-    if n and n >= 0 then ns.db.upgradeMargin = n; Print("upgrade margin " .. n .. " item levels")
+    if n and n >= 0 then
+      ns.db.upgradeMargin = n; Print("upgrade margin " .. n .. " item levels"); Changed("upgradeMargin")
     else Print("usage: /ag margin <number>") end
 
   elseif cmd == "sound" then Toggle("sound", "Sound")
   elseif cmd == "screen" then Toggle("screen", "Banner")
   elseif cmd == "announce" then Toggle("announce", "Group announce")
-  elseif cmd == "hints" then Toggle("hints", "Drop hints")
+  elseif cmd == "drops" or cmd == "hints" then Toggle("dropReport", "Drop report")
   elseif cmd == "pawn" then Toggle("usePawn", "Pawn scoring")
 
   elseif cmd == "log" then
@@ -369,8 +488,7 @@ SlashCmdList.ANTIGRIEF = function(input)
     Print("log cleared")
 
   else
-    Print("commands:")
-    for _, h in ipairs(HELP) do Line(h) end
+    PrintHelp()
   end
 end
 
@@ -384,6 +502,7 @@ local function LoadSettings()
     -- fill missing keys; replace only values of the wrong type (corrupt)
     if type(db[k]) ~= type(v) then db[k] = (type(v) == "table") and {} or v end
   end
+  for _, k in ipairs(RETIRED_KEYS) do db[k] = nil end
   if not D.SEV_NAME[db.minSeverity] then db.minSeverity = DEFAULTS.minSeverity end
   if db.upgradeMargin < 0 then db.upgradeMargin = DEFAULTS.upgradeMargin end
   ns.db = db
@@ -399,6 +518,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
     local name = ...
     if name ~= ADDON then return end
     LoadSettings()
+    ConfigCall("Init") -- options panel (Config.lua), once the settings exist
     InitPatterns()
     for _, e in ipairs({ "GROUP_ROSTER_UPDATE", "PLAYER_ENTERING_WORLD", "INSPECT_READY",
                          "UNIT_INVENTORY_CHANGED", "START_LOOT_ROLL", "CHAT_MSG_LOOT" }) do
@@ -436,5 +556,5 @@ end)
 ns._test = {
   BuildPattern = BuildPattern, ParseNeed = ParseNeed, InitPatterns = InitPatterns,
   ExtractItemLink = ExtractItemLink, CleanName = CleanName, UnitByName = UnitByName,
-  patterns = NEED_PATTERNS,
+  patterns = NEED_PATTERNS, DROP_REPORT_MAX = DROP_REPORT_MAX,
 }

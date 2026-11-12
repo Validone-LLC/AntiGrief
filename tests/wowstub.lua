@@ -344,4 +344,76 @@ function Ambiguate(name, context)
   return name
 end
 
+---------------------------------------------------------------------------
+-- Settings API (options panel). Recorders, not a UI: S.cfg collects what
+-- was registered. A test sets Settings = nil to model a client without it.
+---------------------------------------------------------------------------
+S.cfg = {
+  categories = {},      -- RegisterVerticalLayoutCategory results
+  addOnCategories = {}, -- RegisterAddOnCategory arguments
+  settings = {},        -- variable -> setting
+  controls = {},        -- { kind, category, setting, options, tooltip }
+  opened = {},          -- OpenToCategory arguments
+}
+
+local function newCategory(name)
+  local cat = { name = name, id = #S.cfg.categories + 1, initializers = {} }
+  function cat:GetID() return self.id end
+  function cat:GetName() return self.name end
+  S.cfg.categories[#S.cfg.categories + 1] = cat
+  local layout = { initializers = {} }
+  function layout:AddInitializer(init) self.initializers[#self.initializers + 1] = init end
+  return cat, layout
+end
+
+local function control(kind, category, setting, options, tooltip)
+  local c = { kind = kind, category = category, setting = setting, options = options, tooltip = tooltip }
+  S.cfg.controls[#S.cfg.controls + 1] = c
+  return c
+end
+
+Settings = {
+  VarType = { Boolean = "boolean", Number = "number", String = "string" },
+  RegisterVerticalLayoutCategory = newCategory,
+  RegisterAddOnSetting = function(category, variable, variableKey, variableTbl, varType, name, default)
+    local setting = {
+      category = category, variable = variable, key = variableKey, tbl = variableTbl,
+      varType = varType, name = name, default = default, callbacks = {}, updates = 0,
+    }
+    function setting:NotifyUpdate() self.updates = self.updates + 1 end
+    function setting:GetValue() return self.tbl[self.key] end
+    function setting:SetValue(v)
+      self.tbl[self.key] = v
+      for _, cb in ipairs(self.callbacks) do cb(self, v) end
+    end
+    function setting:GetVariable() return self.variable end
+    function setting:GetName() return self.name end
+    function setting:GetDefaultValue() return self.default end
+    function setting:SetValueChangedCallback(cb) self.callbacks[#self.callbacks + 1] = cb end
+    S.cfg.settings[variable] = setting
+    return setting
+  end,
+  SetOnValueChangedCallback = function(variable, cb)
+    local s = S.cfg.settings[variable]
+    if s then s.callbacks[#s.callbacks + 1] = function(setting, v) cb(nil, setting, v) end end
+  end,
+  CreateCheckbox = function(category, setting, tooltip) return control("checkbox", category, setting, nil, tooltip) end,
+  CreateSlider = function(category, setting, options, tooltip) return control("slider", category, setting, options, tooltip) end,
+  CreateDropdown = function(category, setting, options, tooltip) return control("dropdown", category, setting, options, tooltip) end,
+  CreateSliderOptions = function(minValue, maxValue, step)
+    local o = { min = minValue, max = maxValue, step = step, formatters = {} }
+    function o:SetLabelFormatter(where, fn) self.formatters[where] = fn end
+    return o
+  end,
+  CreateControlTextContainer = function()
+    local c = { data = {} }
+    function c:Add(value, label, tooltip) self.data[#self.data + 1] = { value = value, label = label, tooltip = tooltip } end
+    function c:GetData() return self.data end
+    return c
+  end,
+  RegisterAddOnCategory = function(category) S.cfg.addOnCategories[#S.cfg.addOnCategories + 1] = category end,
+  OpenToCategory = function(id) S.cfg.opened[#S.cfg.opened + 1] = id end,
+}
+MinimalSliderWithSteppersMixin = { Label = { Left = 0, Right = 1, Top = 2, Min = 3, Max = 4 } }
+
 return S

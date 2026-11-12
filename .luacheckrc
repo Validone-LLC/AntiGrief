@@ -31,11 +31,13 @@ read_globals = {
   "CreateFrame", "DEFAULT_CHAT_FRAME", "RaidNotice_AddMessage", "RaidWarningFrame", "ChatTypeInfo",
   "PlaySound", "SOUNDKIT", "SendChatMessage", "LE_PARTY_CATEGORY_INSTANCE",
   -- misc
-  "GetTime", "GetLocale", "issecretvalue", "wipe", "date", "time",
+  "GetTime", "GetLocale", "issecretvalue", "wipe", "date", "time", "geterrorhandler",
   -- global strings and constants
   "LOOT_ROLL_NEED", "LOOT_ROLL_ROLLED_NEED", "LOOT_ROLL_ROLLED_NEED_ROLE_BONUS",
   "ITEM_SPELL_TRIGGER_ONEQUIP", "ITEM_SPELL_TRIGGER_ONUSE", "ITEM_SPELL_TRIGGER_ONPROC",
   "LOCALIZED_CLASS_NAMES_MALE", "INVSLOT_RANGED",
+  -- options panel (Config.lua): Settings API
+  "Settings", "MinimalSliderWithSteppersMixin",
   -- optional Pawn API
   "PawnGetItemData", "PawnGetSingleValueFromItem", "PawnGetAllScalesEx", "PawnIsInitialized",
 }
