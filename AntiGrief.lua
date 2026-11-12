@@ -80,6 +80,10 @@ local function InitPatterns()
     local p = BuildPattern(_G[key])
     if p then NEED_PATTERNS[#NEED_PATTERNS + 1] = p end
   end
+  -- Longest (most literal text, most specific) first, so e.g. a role-bonus
+  -- line isn't swallowed by a shorter pattern that also matches it with
+  -- " + Role Bonus" glued onto the name
+  table.sort(NEED_PATTERNS, function(a, b) return #a > #b end)
 end
 
 -- First item hyperlink in s, including a colour prefix (|cffxxxxxx or
@@ -165,14 +169,16 @@ local function Alert(who, link, findings, maxSev)
   end
   if not who.items then Line("|cff999999(gear not scanned yet; upgrade check skipped)|r") end
 
-  if ns.db.screen and RaidNotice_AddMessage and RaidWarningFrame then
+  if ns.db.screen then
     local color = (ChatTypeInfo and ChatTypeInfo.RAID_WARNING) or { r = 1, g = 0.28, b = 0 }
-    pcall(RaidNotice_AddMessage, RaidWarningFrame, ("AntiGrief: %s may be griefing %s"):format(short, link), color)
+    D.ShowBanner(("AntiGrief: %s may be griefing %s"):format(short, link), color)
   end
   if ns.db.sound and PlaySound then
     pcall(PlaySound, (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959, "Master")
   end
-  if ns.db.announce then
+  -- A send blocked by chat lockdown isn't an error pcall can catch, so check first
+  local lockdown = C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()
+  if ns.db.announce and not lockdown then
     local inInstance = LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE)
     local channel = (inInstance and "INSTANCE_CHAT") or (IsInRaid() and "RAID") or "PARTY"
     local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
@@ -412,7 +418,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
     local unit = ...
     if ns.db.enabled and type(unit) == "string"
         and (unit:find("^party%d+$") or unit:find("^raid%d+$")) and UnitIsPlayer(unit) then
-      RescanSoon(UnitGUID(unit))
+      RescanSoon(ns.GUID(unit))
     end
 
   elseif event == "START_LOOT_ROLL" then

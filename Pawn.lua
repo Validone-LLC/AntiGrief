@@ -5,11 +5,23 @@
 local _, ns = ...
 local Rules = ns.Rules
 
+-- Before Pawn initializes, its API prints "ERROR: ..." lines to chat
+-- (VgerCore.Fail) instead of raising, so pcall can't hide them: wait for
+-- PawnIsInitialized.
 local function Available()
   local loaded = C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("Pawn")
-  return (loaded and type(PawnGetItemData) == "function" and type(PawnGetSingleValueFromItem) == "function") and true or false
+  return (loaded and PawnIsInitialized and type(PawnGetItemData) == "function"
+    and type(PawnGetSingleValueFromItem) == "function") and true or false
 end
 Rules.PawnAvailable = Available
+
+-- Built-in scale names look like "Classic":WARRIOR1, where the number is a
+-- per-class index (not a spec ID). Match the token right after the last
+-- colon, so WARRIOR can't match e.g. a DEMONHUNTER scale on HUNTER, and
+-- custom scales without that shape are skipped.
+local function ScaleClass(name)
+  return name:match(":(%u+)%d*$")
+end
 
 local scaleCache = {}
 local function ScalesForClass(classToken)
@@ -17,14 +29,14 @@ local function ScalesForClass(classToken)
   if scaleCache[classToken] then return scaleCache[classToken] end
   local list = {}
   local all
-  if type(PawnGetAllScalesEx) == "function" then
+  if PawnIsInitialized and type(PawnGetAllScalesEx) == "function" then
     local ok, res = pcall(PawnGetAllScalesEx)
     if ok then all = res end
   end
   if type(all) ~= "table" then all = {} end
   for _, s in ipairs(all) do
     local name = (type(s) == "table") and s.Name or s
-    if type(name) == "string" and name:find(classToken, 1, true) then list[#list + 1] = name end
+    if type(name) == "string" and ScaleClass(name) == classToken then list[#list + 1] = name end
   end
   if #list > 0 then scaleCache[classToken] = list end -- don't cache before Pawn is ready
   return list
@@ -33,8 +45,13 @@ end
 local function Score(link, scale)
   local ok, item = pcall(PawnGetItemData, link)
   if not ok or not item then return nil end
-  local ok2, v = pcall(PawnGetSingleValueFromItem, item, scale)
-  if ok2 and type(v) == "number" then return v end
+  -- returns (Value, UnenchantedValue). Prefer the unenchanted value: a fresh
+  -- drop has no enchant, their equipped gear may, and comparing enchanted
+  -- gear to a bare drop would bias toward "not an upgrade".
+  local ok2, v, unenchanted = pcall(PawnGetSingleValueFromItem, item, scale)
+  if not ok2 then return nil end
+  if type(unenchanted) == "number" then return unenchanted end
+  if type(v) == "number" then return v end
 end
 
 -- Best score of an item across every scale for the class (nil = can't tell)

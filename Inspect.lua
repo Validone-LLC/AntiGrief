@@ -18,6 +18,15 @@ local queue, queued, notBefore = {}, {}, {}
 local pending
 local lastRequest = 0
 
+-- UnitGUID, treating a secret value as unknown (it can't be compared or
+-- used as a table key safely)
+local function GUID(unit)
+  local g = UnitGUID(unit)
+  if g == nil or (issecretvalue and issecretvalue(g)) then return nil end
+  return g
+end
+ns.GUID = GUID
+
 function ns.GroupUnits()
   local units = {}
   if IsInRaid() then
@@ -32,23 +41,17 @@ end
 function ns.UnitForGUID(guid)
   if not guid then return nil end
   for _, u in ipairs(ns.GroupUnits()) do
-    if UnitGUID(u) == guid then return u end
+    if GUID(u) == guid then return u end
   end
 end
 
 -- Always returns a fresh table (callers may add fields to it)
 local function Basic(unit)
   local _, class = UnitClass(unit)
-  local spec -- own spec is always readable; others' comes from the inspect
-  if UnitIsUnit(unit, "player") and GetSpecialization and GetSpecializationInfo then
-    local i = GetSpecialization()
-    if type(i) == "number" and i > 0 then
-      local id = GetSpecializationInfo(i)
-      if type(id) == "number" and id > 0 then spec = id end
-    end
-  end
+  -- own spec is always readable; others' comes from the inspect
+  local spec = UnitIsUnit(unit, "player") and D.PlayerSpecID() or nil
   return {
-    guid  = UnitGUID(unit),
+    guid  = GUID(unit),
     name  = GetUnitName(unit, true) or UnitName(unit),
     class = class,
     level = UnitLevel(unit),
@@ -60,7 +63,7 @@ end
 -- Returns a new table each call; `items` is shared with the cache, so
 -- callers must replace it rather than mutate it.
 function Inspect.Who(unit)
-  local guid = UnitGUID(unit)
+  local guid = GUID(unit)
   if not guid then return nil end
   local who = Basic(unit)
   local c = Inspect.cache[guid]
@@ -72,7 +75,7 @@ function Inspect.Who(unit)
 end
 
 function Inspect.Queue(guid, force)
-  if not guid or queued[guid] or guid == UnitGUID("player") then return end
+  if not guid or queued[guid] or guid == GUID("player") then return end
   local c = Inspect.cache[guid]
   if c and not force and (GetTime() - c.time) < STALE_AFTER then return end
   queued[guid] = true
@@ -81,7 +84,7 @@ end
 
 function Inspect.QueueGroup(force)
   for _, u in ipairs(ns.GroupUnits()) do
-    if UnitIsPlayer(u) and not UnitIsUnit(u, "player") then Inspect.Queue(UnitGUID(u), force) end
+    if UnitIsPlayer(u) and not UnitIsUnit(u, "player") then Inspect.Queue(GUID(u), force) end
   end
 end
 
@@ -101,7 +104,7 @@ end
 function Inspect.Prune()
   local keep = {}
   for _, u in ipairs(ns.GroupUnits()) do
-    local g = UnitGUID(u)
+    local g = GUID(u)
     if g then keep[g] = true end
   end
   DropMissing(Inspect.cache, keep)
@@ -121,7 +124,7 @@ function Inspect.Status()
   for _, u in ipairs(ns.GroupUnits()) do
     if UnitIsPlayer(u) and not UnitIsUnit(u, "player") then
       total = total + 1
-      local g = UnitGUID(u)
+      local g = GUID(u)
       if g and Inspect.cache[g] then scanned = scanned + 1 end
     end
   end
@@ -188,15 +191,15 @@ function Inspect.Pump()
 end
 
 function Inspect.OnInspectReady(guid)
+  if issecretvalue and issecretvalue(guid) then return end
   if not pending or pending.retry or pending.guid ~= guid then return end
   local unit = pending.unit
-  if UnitGUID(unit) ~= guid then unit = ns.UnitForGUID(guid) end
+  if GUID(unit) ~= guid then unit = ns.UnitForGUID(guid) end
   if not unit then pending = nil; return end
 
   local entry = Basic(unit)
   entry.items, entry.time = {}, GetTime()
-  local spec = GetInspectSpecialization and GetInspectSpecialization(unit)
-  entry.spec = (type(spec) == "number" and spec > 0) and spec or nil -- 0 = unknown
+  entry.spec = D.InspectSpecID(unit) -- nil when unknown (0, secret, API missing)
   local missing = ReadItems(unit, entry)
   Inspect.cache[guid] = entry
   notBefore[guid] = nil
@@ -209,7 +212,7 @@ function Inspect.OnInspectReady(guid)
     C_Timer.After(LINK_RETRY, function()
       if pending ~= hold then return end -- timed out or pruned meanwhile
       pending = nil
-      if Inspect.cache[guid] == entry and UnitGUID(unit) == guid then ReadItems(unit, entry) end
+      if Inspect.cache[guid] == entry and GUID(unit) == guid then ReadItems(unit, entry) end
       if not BlizzardInspectOpen() then ClearInspectPlayer() end
     end)
   else

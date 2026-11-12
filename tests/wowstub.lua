@@ -87,13 +87,23 @@ end
 -- Chat, alerts, sound
 ---------------------------------------------------------------------------
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, msg) S.chat[#S.chat + 1] = msg end }
+-- Forever with loadDeprecationFallbacks = 0: the RaidNotice_AddMessage and
+-- global SendChatMessage shims don't exist; the current APIs do.
 RaidWarningFrame = {}
-function RaidNotice_AddMessage(_, text) S.banners[#S.banners + 1] = text end
+RaidNotice_AddMessage = nil
+RaidWarningUtil = {
+  AddMessage = function(text, colorInfo) S.banners[#S.banners + 1] = { text = text, color = colorInfo } end,
+}
 ChatTypeInfo = { RAID_WARNING = { r = 1, g = 0.28, b = 0 } }
 SOUNDKIT = { RAID_WARNING = 8959 }
 function PlaySound() S.sounds = S.sounds + 1 end
-function SendChatMessage(msg, channel) S.sent[#S.sent + 1] = { msg = msg, channel = channel } end
-C_ChatInfo = { SendChatMessage = SendChatMessage }
+SendChatMessage = nil
+S.chatLockdown = false
+C_ChatInfo = {
+  SendChatMessage = function(msg, channel) S.sent[#S.sent + 1] = { msg = msg, channel = channel } end,
+  InChatMessagingLockdown = function() return S.chatLockdown end,
+}
+PawnIsInitialized = nil
 LE_PARTY_CATEGORY_HOME = 1
 LE_PARTY_CATEGORY_INSTANCE = 2
 SlashCmdList = {}
@@ -116,10 +126,21 @@ end
 ---------------------------------------------------------------------------
 -- Global strings (enUS)
 ---------------------------------------------------------------------------
-LOOT_ROLL_NEED = "%s has selected Need for: %s"
-LOOT_ROLL_NEED_SELF = "You have selected Need for: %s"
-LOOT_ROLL_ROLLED_NEED = "Need Roll - %d for %s by %s"
-LOOT_ROLL_ROLLED_NEED_ROLE_BONUS = nil
+-- Real 1.60.1 strings (docs/api-verification.md): a loot-history link and
+-- roll ID come first.
+LOOT_ROLL_NEED = "|HlootHistory:%d|h[Loot]|h: %s has selected Need for: %s"
+LOOT_ROLL_NEED_SELF = "|HlootHistory:%d|h[Loot]|h: You have selected Need for: %s"
+LOOT_ROLL_ROLLED_NEED = "|HlootHistory:%d|h[Loot]|h: Need Roll - %d for %s by %s"
+LOOT_ROLL_ROLLED_NEED_ROLE_BONUS = "Need Roll - %d for %s by %s + Role Bonus"
+-- The spec's older forms, kept for extra coverage (S.UseOldLootStrings)
+S.OLD_LOOT = {
+  LOOT_ROLL_NEED = "%s has selected Need for: %s",
+  LOOT_ROLL_NEED_SELF = "You have selected Need for: %s",
+  LOOT_ROLL_ROLLED_NEED = "Need Roll - %d for %s by %s",
+}
+function S.UseOldLootStrings()
+  for k, v in pairs(S.OLD_LOOT) do _G[k] = v end
+end
 ITEM_SPELL_TRIGGER_ONEQUIP = "Equip:"
 ITEM_SPELL_TRIGGER_ONUSE = "Use:"
 ITEM_SPELL_TRIGGER_ONPROC = "Chance on hit:"
@@ -293,10 +314,28 @@ function GetInventoryItemID(u, slot)
   local link = visibleItem(u, slot)
   return link and tonumber(link:match("item:(%d+)")) or nil
 end
-function GetInspectSpecialization(u) local d = U(u); return d and d.spec or 0 end
-function GetSpecialization() return nil end
-function GetSpecializationInfo() return nil end
+-- Forever: the global spec functions (Blizzard_DeprecatedSpecialization) are
+-- not loaded; C_SpecializationInfo is. S.playerSpecIndex / S.playerSpecID
+-- drive the player's spec; unit.spec drives an inspected unit's (default 0).
+GetSpecialization, GetSpecializationInfo, GetInspectSpecialization = nil, nil, nil
 GetSpecializationInfoByID = nil
+C_SpecializationInfo = {
+  GetSpecialization = function() return S.playerSpecIndex end,
+  GetSpecializationInfo = function(index)
+    if index == S.playerSpecIndex then return S.playerSpecID or 0 end
+    return 0
+  end,
+  GetInspectSpecialization = function(u) local d = U(u); return d and d.spec or 0 end,
+}
+
+Enum = {
+  ItemClass = { Weapon = 2, Armor = 4 },
+  ItemArmorSubclass = { Cloth = 1, Leather = 2, Mail = 3, Plate = 4, Shield = 6, Libram = 7, Idol = 8, Totem = 9 },
+  ItemWeaponSubclass = {
+    Axe1H = 0, Axe2H = 1, Bows = 2, Guns = 3, Mace1H = 4, Mace2H = 5, Polearm = 6, Sword1H = 7, Sword2H = 8,
+    Staff = 10, Unarmed = 13, Generic = 14, Dagger = 15, Thrown = 16, Crossbow = 18, Wand = 19, Fishingpole = 20,
+  },
+}
 
 function Ambiguate(name, context)
   if context == "short" then return (name:match("^[^-]+")) or name end

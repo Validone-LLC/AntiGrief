@@ -152,6 +152,14 @@ end
 
 local function evaluate(link, who) return ns.Rules.Evaluate(link, who) end
 
+-- Chat lines in the real 1.60.1 format. The loot-history roll ID is a
+-- number, so it must never be taken for the player name.
+local ROLL_ID = 4242
+local function NEED(name, link) return LOOT_ROLL_NEED:format(ROLL_ID, name, link) end
+local function ROLLED(roll, link, name) return LOOT_ROLL_ROLLED_NEED:format(ROLL_ID, roll, link, name) end
+local function SELF_NEED(link) return LOOT_ROLL_NEED_SELF:format(ROLL_ID, link) end
+local function ROLE_BONUS(roll, link, name) return LOOT_ROLL_ROLLED_NEED_ROLE_BONUS:format(roll, link, name) end
+
 ---------------------------------------------------------------------------
 -- Tests
 ---------------------------------------------------------------------------
@@ -278,12 +286,22 @@ end)
 
 -- Pattern building ---------------------------------------------------------
 
-test("BuildPattern: LOOT_ROLL_NEED", function()
-  eq(ns._test.BuildPattern(LOOT_ROLL_NEED), "^(.+) has selected Need for: (.+)$", "pattern")
+local REAL_NEED_PAT    = "^|HlootHistory:(%d+)|h%[Loot%]|h: (.+) has selected Need for: (.+)$"
+local REAL_ROLLED_PAT  = "^|HlootHistory:(%d+)|h%[Loot%]|h: Need Roll %- (%d+) for (.+) by (.+)$"
+local ROLE_BONUS_PAT   = "^Need Roll %- (%d+) for (.+) by (.+) %+ Role Bonus$"
+
+test("BuildPattern: real 1.60.1 LOOT_ROLL_NEED", function()
+  eq(ns._test.BuildPattern(LOOT_ROLL_NEED), REAL_NEED_PAT, "pattern")
 end)
 
-test("BuildPattern: LOOT_ROLL_ROLLED_NEED", function()
-  eq(ns._test.BuildPattern(LOOT_ROLL_ROLLED_NEED), "^Need Roll %- (%d+) for (.+) by (.+)$", "pattern")
+test("BuildPattern: real 1.60.1 LOOT_ROLL_ROLLED_NEED and ROLE_BONUS", function()
+  eq(ns._test.BuildPattern(LOOT_ROLL_ROLLED_NEED), REAL_ROLLED_PAT, "rolled")
+  eq(ns._test.BuildPattern(LOOT_ROLL_ROLLED_NEED_ROLE_BONUS), ROLE_BONUS_PAT, "role bonus")
+end)
+
+test("BuildPattern: spec's older English strings", function()
+  eq(ns._test.BuildPattern(S.OLD_LOOT.LOOT_ROLL_NEED), "^(.+) has selected Need for: (.+)$", "need")
+  eq(ns._test.BuildPattern(S.OLD_LOOT.LOOT_ROLL_ROLLED_NEED), "^Need Roll %- (%d+) for (.+) by (.+)$", "rolled")
 end)
 
 test("BuildPattern: positional, %% literal, magic chars, trailing text, no captures", function()
@@ -299,55 +317,85 @@ test("BuildPattern: positional, %% literal, magic chars, trailing text, no captu
   eq(B(nil), nil, "nil")
 end)
 
-test("BuildPattern output matches the formatted English strings", function()
+test("BuildPattern output matches the formatted real strings", function()
   local B = ns._test.BuildPattern
-  local a, b = ("Bob has selected Need for: X"):match(B(LOOT_ROLL_NEED))
-  eq(a, "Bob", "need name"); eq(b, "X", "need item")
-  local n, i, p = ("Need Roll - 42 for X by Bob"):match(B(LOOT_ROLL_ROLLED_NEED))
-  eq(n, "42", "roll"); eq(i, "X", "item"); eq(p, "Bob", "name")
+  local id, a, b = NEED("Bob", "X"):match(B(LOOT_ROLL_NEED))
+  eq(id, "4242", "loot id"); eq(a, "Bob", "need name"); eq(b, "X", "need item")
+  local id2, n, i, p = ROLLED(42, "X", "Bob"):match(B(LOOT_ROLL_ROLLED_NEED))
+  eq(id2, "4242", "loot id"); eq(n, "42", "roll"); eq(i, "X", "item"); eq(p, "Bob", "name")
 end)
 
--- Need-line parsing --------------------------------------------------------
+test("InitPatterns: idempotent, all three strings, most specific first", function()
+  local pats = ns._test.patterns
+  eq(#pats, 3, "pattern count")
+  ns._test.InitPatterns()
+  eq(#pats, 3, "pattern count after re-init")
+  for i = 2, #pats do ok(#pats[i - 1] >= #pats[i], "sorted longest first") end
+end)
 
-test("ParseNeed: select line", function()
-  local name, link = ns._test.ParseNeed(LOOT_ROLL_NEED:format("Bob", I.robe58))
+-- Need-line parsing (real 1.60.1 format) -----------------------------------
+
+test("ParseNeed: select line; loot-history ID never taken as the name", function()
+  local name, link = ns._test.ParseNeed(NEED("Bob", I.robe58))
   eq(name, "Bob", "name"); eq(link, I.robe58, "link")
 end)
 
-test("ParseNeed: rolled line (number skipped)", function()
-  local name, link = ns._test.ParseNeed(LOOT_ROLL_ROLLED_NEED:format(87, I.robe58, "Bob"))
+test("ParseNeed: rolled line (both numbers skipped)", function()
+  local name, link = ns._test.ParseNeed(ROLLED(87, I.robe58, "Bob"))
+  eq(name, "Bob", "name"); eq(link, I.robe58, "link")
+end)
+
+test("ParseNeed: role-bonus line", function()
+  local name, link = ns._test.ParseNeed(ROLE_BONUS(87, I.robe58, "Bob"))
   eq(name, "Bob", "name"); eq(link, I.robe58, "link")
 end)
 
 test("ParseNeed: item name containing ' by ' in the rolled line", function()
-  local name, link = ns._test.ParseNeed(LOOT_ROLL_ROLLED_NEED:format(12, I.touchedByLight, "Bob"))
+  local name, link = ns._test.ParseNeed(ROLLED(12, I.touchedByLight, "Bob"))
   eq(name, "Bob", "name"); eq(link, I.touchedByLight, "link")
 end)
 
 test("ParseNeed: item name containing the separator itself", function()
-  local name, link = ns._test.ParseNeed(LOOT_ROLL_NEED:format("Ann", I.trickyName))
+  local name, link = ns._test.ParseNeed(NEED("Ann", I.trickyName))
   eq(name, "Ann", "name"); eq(link, I.trickyName, "link")
 end)
 
 test("ParseNeed: player hyperlink and colour-coded names", function()
   local P = ns._test.ParseNeed
-  local name = P(LOOT_ROLL_NEED:format("|Hplayer:Bob-Stormrage:42:PARTY|h[Bob]|h", I.robe58))
+  local name = P(NEED("|Hplayer:Bob-Stormrage:42:PARTY|h[Bob]|h", I.robe58))
   eq(name, "Bob-Stormrage", "player link")
-  name = P(LOOT_ROLL_NEED:format("|cffc79c6eBob|r", I.robe58))
+  name = P(NEED("|cffc79c6eBob|r", I.robe58))
   eq(name, "Bob", "colour code")
 end)
 
 test("ParseNeed: modern |cnIQ4: link colour", function()
-  local name, link = ns._test.ParseNeed(LOOT_ROLL_NEED:format("Bob", I.modernLink))
+  local name, link = ns._test.ParseNeed(NEED("Bob", I.modernLink))
   eq(name, "Bob", "name"); eq(link, I.modernLink, "link")
 end)
 
 test("ParseNeed: own, Greed and link-less lines are ignored", function()
   local P = ns._test.ParseNeed
-  eq(P(LOOT_ROLL_NEED_SELF:format(I.robe58)), nil, "own roll")
-  eq(P("Bob has selected Greed for: " .. I.robe58), nil, "greed")
-  eq(P("Bob has selected Need for: nothing"), nil, "no link")
+  eq(P(SELF_NEED(I.robe58)), nil, "own roll (real format)")
+  eq(P(("|HlootHistory:%d|h[Loot]|h: Bob has selected Greed for: %s"):format(ROLL_ID, I.robe58)), nil, "greed")
+  eq(P(NEED("Bob", "nothing")), nil, "no link")
   eq(P(""), nil, "empty")
+end)
+
+-- Need-line parsing (spec's older format, extra coverage) ------------------
+
+test("ParseNeed (old format): select, rolled, self, role bonus", function()
+  S.UseOldLootStrings()
+  ns._test.InitPatterns()
+  local O, P = S.OLD_LOOT, ns._test.ParseNeed
+  local name, link = P(O.LOOT_ROLL_NEED:format("Bob", I.robe58))
+  eq(name, "Bob", "select name"); eq(link, I.robe58, "select link")
+  name = P(O.LOOT_ROLL_ROLLED_NEED:format(87, I.touchedByLight, "Bob"))
+  eq(name, "Bob", "rolled name")
+  eq(P(O.LOOT_ROLL_NEED_SELF:format(I.robe58)), nil, "self")
+  -- the old rolled pattern also matches a role-bonus line ("Bob + Role Bonus");
+  -- the longer role-bonus pattern must win
+  name = P(ROLE_BONUS(87, I.robe58, "Bob"))
+  eq(name, "Bob", "role bonus name")
 end)
 
 test("ParseNeed: locale that reorders arguments", function()
@@ -357,63 +405,56 @@ test("ParseNeed: locale that reorders arguments", function()
   eq(name, "Bob", "name"); eq(link, I.robe58, "link")
 end)
 
-test("InitPatterns is idempotent", function()
-  local before = #ns._test.patterns
-  ns._test.InitPatterns()
-  eq(#ns._test.patterns, before, "pattern count")
-  eq(before, 2, "LOOT_ROLL_NEED + LOOT_ROLL_ROLLED_NEED")
-end)
-
 -- End to end: chat line -> alert ------------------------------------------
 
 test("Need select + result lines alert once; again after 60 s", function()
   party()
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_ROLLED_NEED:format(77, I.spellDagger, "Bob"))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", ROLLED(77, I.spellDagger, "Bob"))
   eq(S.chatCount("rolled NEED"), 1, "alerts")
   eq(S.sounds, 1, "sounds")
   eq(#S.banners, 1, "banners")
   eq(#ns.db.log, 1, "log entries")
   eq(S.chatCount("gear not scanned yet"), 1, "unscanned note")
   S.advance(61)
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(S.chatCount("rolled NEED"), 2, "alerts after window")
 end)
 
 test("no alert: own roll, below threshold, disabled, secret, not grouped", function()
   party()
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Me", I.plateChest))        -- self
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.leatherChest))     -- Low only
+  S.fire("CHAT_MSG_LOOT", NEED("Me", I.plateChest))        -- self
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest))     -- Low only
   ns.db.minSeverity = 3
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.robe58 ))          -- would be High...
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58 ))          -- would be High...
   eq(S.chatCount("rolled NEED"), 1, "High still alerts at sev 3")
   ns.db.enabled = false
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   ns.db.enabled = true
-  local secret = LOOT_ROLL_NEED:format("Bob", I.staminaSpellGloves) -- High for a warrior
+  local secret = NEED("Bob", I.staminaSpellGloves) -- High for a warrior
   S.secret[secret] = true
   S.fire("CHAT_MSG_LOOT", secret)
   S.SetGroup(S.units, nil)
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(S.chatCount("rolled NEED"), 1, "alerts")
 end)
 
 test("uncached item: retried, then alerts once cached", function()
   party()
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.uncachedPlate))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate))
   eq(S.chatCount("rolled NEED"), 0, "no alert before cache")
   ok(S.loadRequests >= 1, "requested item data")
   S.advance(1)
   eq(S.chatCount("rolled NEED"), 0, "warrior fits plate")
   S.units.party1.class = "MAGE"
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.uncachedPlate))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate))
   eq(S.chatCount("rolled NEED"), 1, "mage on cached plate")
 end)
 
 test("never-cached item: judged after 3 retries with instant info", function()
   party()
   S.units.party1.class = "MAGE"
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.neverCachedPlate))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.neverCachedPlate))
   S.advance(2.5)
   eq(S.chatCount("rolled NEED"), 0, "still retrying")
   S.advance(1)
@@ -424,11 +465,11 @@ end)
 test("announce goes to PARTY, also when LE_PARTY_CATEGORY_INSTANCE is missing", function()
   party()
   ns.db.announce = true
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(#S.sent, 1, "sent")
   eq(S.sent[1].channel, "PARTY", "channel")
   LE_PARTY_CATEGORY_INSTANCE = nil
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.robe58))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
   eq(#S.sent, 2, "sent")
   eq(S.sent[2].channel, "PARTY", "channel without constant")
   ok(not S.sent[1].msg:lower():find("ninja", 1, true), "wording")
@@ -440,7 +481,7 @@ test("log keeps the newest 50", function()
     S.AddItem { id = 2000 + i, name = "Plate " .. i, classID = ARMOR, subclassID = PLATE, subType = "Plate",
       equipLoc = "INVTYPE_CHEST", ilvl = 60, minLevel = 55 }
     S.units.party1.class = "MAGE"
-    S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", S.items[2000 + i].link))
+    S.fire("CHAT_MSG_LOOT", NEED("Bob", S.items[2000 + i].link))
   end
   eq(#ns.db.log, 50, "log size")
   ok(ns.db.log[1].item:find("Plate 55", 1, true), "newest first")
@@ -546,6 +587,182 @@ test("inspect: UNIT_INVENTORY_CHANGED re-queues a member", function()
   eq(queued, 1, "pets ignored")
 end)
 
+-- Spec reading (C_SpecializationInfo via D.PlayerSpecID / D.InspectSpecID) -
+
+test("spec: own spec read via C_SpecializationInfo; 0 or nil index = unknown", function()
+  party()
+  S.playerSpecIndex, S.playerSpecID = 1, 65
+  eq(ns.Inspect.Who("player").spec, 65, "known spec")
+  S.playerSpecIndex = 0
+  eq(ns.Inspect.Who("player").spec, nil, "index 0")
+  S.playerSpecIndex = nil
+  eq(ns.Inspect.Who("player").spec, nil, "nil index")
+  S.playerSpecIndex, S.playerSpecID = 1, 0
+  eq(ns.Inspect.Who("player").spec, nil, "spec ID 0")
+end)
+
+local function scanPaladin(spec)
+  -- Ann replaces Bob as party1 (party unit tokens must be contiguous)
+  party({ party1 = { guid = GUID.ann, name = "Ann", class = "PALADIN", level = 60, spec = spec, items = {} } })
+  S.advance(0.5)
+  eq(S.notified[1], "party1", "inspected Ann")
+  S.fire("INSPECT_READY", GUID.ann)
+  return ns.Inspect.Who("party1")
+end
+
+test("spec: inspected spec 0 -> nil -> class-wide stats (no flag)", function()
+  local who = scanPaladin(0)
+  eq(who.spec, nil, "spec")
+  local _, sev = evaluate(I.plateChest, who)
+  eq(sev, 0, "Strength plate fits an unknown-spec paladin")
+end)
+
+test("spec: inspected Holy (65) narrows a paladin to caster stats", function()
+  local who = scanPaladin(65)
+  eq(who.spec, 65, "spec")
+  local _, sev = evaluate(I.plateChest, who)
+  eq(sev, 3, "Strength plate on Holy")
+end)
+
+test("spec: secret inspect spec is treated as unknown", function()
+  S.secret[65] = true
+  local who = scanPaladin(65)
+  eq(who.spec, nil, "spec")
+end)
+
+test("secret GUIDs are skipped by the inspect queue", function()
+  party()
+  S.secret[GUID.bob] = true
+  S.fire("GROUP_ROSTER_UPDATE")
+  S.advance(2)
+  eq(#S.notified, 0, "no inspect for a secret GUID")
+  S.fire("INSPECT_READY", GUID.bob) -- must not error
+end)
+
+-- Banner and announce --------------------------------------------------------
+
+test("banner: shown via RaidWarningUtil with the raid-warning colour", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#S.banners, 1, "banners")
+  ok(S.banners[1].text:find("Bob may be griefing", 1, true), "banner text")
+  eq(S.banners[1].color, ChatTypeInfo.RAID_WARNING, "colour")
+end)
+
+test("banner: no banner API and no ChatTypeInfo doesn't break the alert", function()
+  party()
+  RaidWarningUtil, RaidNotice_AddMessage, ChatTypeInfo = nil, nil, nil
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("rolled NEED"), 1, "chat alert")
+  eq(S.sounds, 1, "sound")
+end)
+
+test("banner: off when the screen setting is off", function()
+  party()
+  ns.db.screen = false
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#S.banners, 0, "banners")
+end)
+
+test("announce: skipped during chat messaging lockdown, alert still shown", function()
+  party()
+  ns.db.announce = true
+  S.chatLockdown = true
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#S.sent, 0, "nothing sent in lockdown")
+  eq(S.chatCount("rolled NEED"), 1, "private alert shown")
+  S.chatLockdown = false
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(#S.sent, 1, "sent after lockdown")
+end)
+
+test("announce: a send that raises is contained by pcall", function()
+  party()
+  ns.db.announce = true
+  C_ChatInfo.SendChatMessage = function() error("blocked") end
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#ns.db.log, 1, "alert completed and logged")
+end)
+
+-- Pawn (fake Pawn 2.14.1 API) -------------------------------------------------
+
+-- values[itemID][scale] = { Value, UnenchantedValue }
+local function fakePawn(values)
+  local calls = { scales = 0 }
+  C_AddOns.IsAddOnLoaded = function(name) return name == "Pawn" end
+  PawnGetAllScalesEx = function()
+    calls.scales = calls.scales + 1
+    return {
+      { Name = '"Classic":WARRIOR1' }, { Name = '"Classic":WARRIOR2' },
+      { Name = '"Classic":HUNTER1' }, { Name = '"Classic":DEMONHUNTER1' },
+      { Name = "My custom WARRIOR scale" },
+    }
+  end
+  PawnGetItemData = function(link)
+    local id = tonumber(link:match("item:(%d+)"))
+    if not id or (S.items[id] and S.items[id].uncached) then return nil end -- uncached -> nil
+    return { id = id }
+  end
+  PawnGetSingleValueFromItem = function(item, scale)
+    local v = values[item.id] and values[item.id][scale]
+    if not v then return 0, 0 end
+    return v[1], v[2]
+  end
+  return calls
+end
+
+test("pawn: nothing is called before PawnIsInitialized", function()
+  local calls = fakePawn({})
+  PawnIsInitialized = nil
+  eq(ns.Rules.PawnAvailable(), false, "not available")
+  local f = evaluate(I.plateChestBoE, { name = "Bob", class = "WARRIOR", level = 60, items = { [5] = I.plateChest } })
+  eq(calls.scales, 0, "PawnGetAllScalesEx not called")
+  expectNoFinding(f, 2, "Pawn")
+end)
+
+test("pawn: unenchanted values compared; best class scale wins", function()
+  fakePawn({
+    [1011] = { ['"Classic":WARRIOR1'] = { 45, 45 }, ['"Classic":WARRIOR2'] = { 30, 30 } },
+    [1001] = { ['"Classic":WARRIOR1'] = { 50, 40 }, ['"Classic":WARRIOR2'] = { 35, 35 } },
+  })
+  PawnIsInitialized = true
+  local who = { name = "Bob", class = "WARRIOR", level = 60, items = { [5] = I.plateChest } }
+  local delta = ns.Rules.PawnUpgradeCheck(I.plateChestBoE, who, { 5 })
+  ok(delta and math.abs(delta - 0.125) < 1e-9, "delta vs unenchanted 40: " .. tostring(delta))
+  local f, sev = evaluate(I.plateChestBoE, who)
+  eq(sev, 0, "upgrade under WARRIOR1 " .. dump(f))
+end)
+
+test("pawn: worse by 20%+ under every class scale -> High", function()
+  fakePawn({
+    [1011] = { ['"Classic":WARRIOR1'] = { 30, 30 }, ['"Classic":WARRIOR2'] = { 20, 20 } },
+    [1001] = { ['"Classic":WARRIOR1'] = { 40, 40 }, ['"Classic":WARRIOR2'] = { 35, 35 } },
+  })
+  PawnIsInitialized = true
+  local f, sev = evaluate(I.plateChestBoE, { name = "Bob", class = "WARRIOR", level = 60, items = { [5] = I.plateChest } })
+  eq(sev, 3, "maxSev")
+  expectFinding(f, 3, "Pawn scores it 25% below their current Chest")
+end)
+
+test("pawn: HUNTER scales don't include DEMONHUNTER; zero score flags High", function()
+  fakePawn({ [1015] = { ['"Classic":HUNTER1'] = { 0, 0 }, ['"Classic":DEMONHUNTER1'] = { 100, 100 } } })
+  PawnIsInitialized = true
+  eq(ns.Rules.PawnBestScore(I.leatherChest, "HUNTER"), 0, "best hunter score")
+  local f, sev = evaluate(I.leatherChest, { name = "Hun", class = "HUNTER", level = 60 })
+  eq(sev, 3, "maxSev")
+  expectFinding(f, 3, "no value under any Hunter Pawn scale")
+end)
+
+test("pawn: uncached item -> nil score -> item-level fallback", function()
+  fakePawn({})
+  PawnIsInitialized = true
+  eq(ns.Rules.PawnBestScore(I.uncachedPlate, "WARRIOR"), nil, "no score for uncached")
+  eq(ns.Rules.PawnUpgradeCheck(I.clothHelm52, { class = "MAGE", items = { [1] = I.clothHelm63 } }, { 1 }), nil,
+    "no MAGE scales -> nil")
+  local _, sev = evaluate(I.clothHelm52, { name = "Zap", class = "MAGE", level = 60, items = { [1] = I.clothHelm63 } })
+  eq(sev, 2, "item-level Medium still applies")
+end)
+
 -- Slash commands and settings ------------------------------------------------
 
 test("slash commands run without errors", function()
@@ -570,7 +787,7 @@ test("slash commands run without errors", function()
   cmd("on"); eq(ns.db.enabled, true, "on")
   cmd("log"); ok(S.chatCount("no flags logged") == 1, "empty log")
   ns.db.minSeverity = 2
-  S.fire("CHAT_MSG_LOOT", LOOT_ROLL_NEED:format("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   cmd("log"); ok(S.chatCount("recent flags:") == 1, "log")
   cmd("clear"); eq(#ns.db.log, 0, "cleared")
 end)

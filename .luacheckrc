@@ -16,7 +16,8 @@ globals = {
 -- WoW API and global strings the addon reads
 read_globals = {
   -- C_ namespaces
-  "C_AddOns", "C_ChatInfo", "C_Item", "C_Timer", "C_TooltipInfo",
+  "C_AddOns", "C_ChatInfo", "C_Item", "C_SpecializationInfo", "C_Timer", "C_TooltipInfo",
+  "Enum", "RaidWarningUtil",
   -- items
   "GetItemInfo", "GetItemInfoInstant", "GetItemStats", "GetDetailedItemLevelInfo",
   "GetInventoryItemLink", "GetInventoryItemID", "GetLootRollItemLink",
@@ -36,7 +37,7 @@ read_globals = {
   "ITEM_SPELL_TRIGGER_ONEQUIP", "ITEM_SPELL_TRIGGER_ONUSE", "ITEM_SPELL_TRIGGER_ONPROC",
   "LOCALIZED_CLASS_NAMES_MALE", "INVSLOT_RANGED",
   -- optional Pawn API
-  "PawnGetItemData", "PawnGetSingleValueFromItem", "PawnGetAllScalesEx",
+  "PawnGetItemData", "PawnGetSingleValueFromItem", "PawnGetAllScalesEx", "PawnIsInitialized",
 }
 
 -- The test stub defines fake WoW globals and the runner reassigns some of
