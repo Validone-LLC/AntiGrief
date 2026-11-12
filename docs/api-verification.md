@@ -1,0 +1,110 @@
+# AntiGrief: API verification (WoW Forever 1.60.1, TOC 16001)
+
+Checked 2026-11-12 by wow-api-specialist against:
+
+- **[BUI]** Blizzard UI source, `forever` branch of Gethe/wow-ui-source: `https://github.com/Gethe/wow-ui-source/blob/forever/<path>`. Abbreviations: `APIDoc/` = `Interface/AddOns/Blizzard_APIDocumentationGenerated/`.
+- **[KBIR]** Ketho/BlizzardInterfaceResources, tag `1.60.1`: [GlobalAPI.lua](https://github.com/Ketho/BlizzardInterfaceResources/blob/1.60.1/Resources/GlobalAPI.lua) (C API), [FrameXML.lua](https://github.com/Ketho/BlizzardInterfaceResources/blob/1.60.1/Resources/FrameXML.lua) (Lua globals), [Events.lua](https://github.com/Ketho/BlizzardInterfaceResources/blob/1.60.1/Resources/Events.lua), [GlobalStrings/enUS.lua](https://github.com/Ketho/BlizzardInterfaceResources/blob/1.60.1/Resources/GlobalStrings/enUS.lua), [CVars.lua](https://github.com/Ketho/BlizzardInterfaceResources/blob/1.60.1/Resources/CVars.lua).
+- **[WIKI]** warcraft.wiki.gg: [Patch 1.60.1/API changes](https://warcraft.wiki.gg/wiki/Patch_1.60.1/API_changes) (diff `12.1.5..forever`; none of the APIs below are listed as removed) and [notes](https://warcraft.wiki.gg/wiki/Patch_1.60.1/API_changes/notes).
+- **[PAWN]** Pawn 2.14.1 on the user's Forever install, `World of Warcraft\_forever_\Interface\AddOns\Pawn\` (read only). The line numbers match tag [Pawn-2.14.1](https://github.com/VgerMods/Pawn/tree/Pawn-2.14.1) of VgerMods/Pawn.
+
+Key facts behind several rows:
+
+- Forever's UI game type is **`camelot`** inside the `mainline` family. Blizzard's own TOCs use `[AllowLoadGameType camelot]` (`Interface/AddOns/Blizzard_InspectUI/Blizzard_InspectUI.toc:7-37`), and so does Pawn (`Pawn.toc:52-53`).
+- Deprecation shims load only while CVar `loadDeprecationFallbacks` is `"1"`. That is the default ([KBIR] CVars.lua:1014), but players can turn it off, and some shims are also limited by game type.
+- The installed Pawn's TOC reads `## Interface: 16001` (`Pawn.toc:1`). The repo tag ships `120105, 16001`. Either way, 16001 is the Forever interface number.
+- The install path is `World of Warcraft\_forever_\Interface\AddOns\`. The folder is `_forever_`, not `_classic_beta_` as the spec says.
+
+Status: **verified** = exists with the signature used. **changed** = exists, but the call or data had to change. **missing** = not available on Forever. **unverifiable** = needs the live client.
+
+## Functions
+
+| API | Used in | Status | Signature & returns | Source | Notes |
+|---|---|---|---|---|---|
+| `C_Item.GetItemInfo` | Data (D.GetItemInfo), Rules, AntiGrief | verified | `(itemInfo: ID/link/name)` → name, link, quality, itemLevel(4), minLevel(5), type, subType, stackCount, equipLoc, texture, sellPrice, classID, subclassID, bindType(14), expansionID, setID, isCraftingReagent, itemDescription. MayReturnNothing (uncached) | [BUI] APIDoc/ItemDocumentation.lua:626 | `select(4)`, `select(5)` and `select(14)` are correct. bindType 2 = `Enum.ItemBind.OnEquip` (ItemConstantsDocumentation.lua:249). The global `GetItemInfo` is not in [KBIR] GlobalAPI, so it exists at most as a fallback |
+| `C_Item.GetItemInfoInstant` | Data, Rules, AntiGrief | verified | `(itemInfo)` → itemID, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID | ItemDocumentation.lua:659 | Matches Rules.lua:79 |
+| `C_Item.GetItemStats` | Data (D.GetItemStats), Rules | verified | `(itemLink: cstring)` → statTable, keyed by `ITEM_MOD_*_SHORT`. MayReturnNothing | ItemDocumentation.lua:1004 | Takes a **link**, not an ID. The global `GetItemStats` is not in GlobalAPI |
+| `C_Item.GetDetailedItemLevelInfo` | Rules.ItemLevelOf | verified | `(itemInfo)` → actualItemLevel, previewLevel, sparseItemLevel. MayReturnNothing | ItemDocumentation.lua:354 | Pawn makes the same call (Pawn.lua:~1356) |
+| `C_Item.RequestLoadItemDataByID` | AntiGrief Judge | verified | `(itemInfo: ItemInfo)`, no returns | ItemDocumentation.lua:1710 | `ItemInfo` accepts an ID, a link or a name, so passing the item ID is fine. Completion fires `ITEM_DATA_LOAD_RESULT` (not used) |
+| `C_TooltipInfo.GetHyperlink` | Rules EffectBuckets | verified | `(hyperlink, optionalArg1?, optionalArg2?, hideVendorPrice?)` → TooltipData (`.lines[i].leftText`). MayReturnNothing | APIDoc/TooltipInfoDocumentation.lua:337 | **`leftText` is filled without SurfaceArgs.** `TooltipUtil.SurfaceArgs` no longer exists (Blizzard_SharedXMLGame/Tooltip/TooltipUtil.lua has no such function), and Blizzard reads `lineData.leftText` directly (Blizzard_SharedXMLGame/Tooltip/TooltipDataHandler.lua:339) |
+| `C_SpecializationInfo.GetSpecialization` | should replace global in Inspect.Basic | **changed** | `(isInspect?, isPet?, specGroupIndex?)` → specializationIndex | APIDoc/SpecializationInfoDocumentation.lua:237 | The global `GetSpecialization` comes only from `Blizzard_DeprecatedSpecialization`, whose TOC says `AllowLoadGameType: classic, standard` (not camelot), so **the global is missing on Forever**. Use `D.PlayerSpecID()` |
+| `C_SpecializationInfo.GetSpecializationInfo` | same | **changed** | `(specializationIndex, isInspect=false, isPet=false, inspectTarget?, sex?, groupIndex?, classID?)` → specId (default 0), name, description, icon, role, primaryStat, … | SpecializationInfoDocumentation.lua:254 | The global is missing on Forever (same shim). Use `D.PlayerSpecID()` |
+| `C_SpecializationInfo.GetInspectSpecialization` | should replace global in Inspect.OnInspectReady | **changed** | `(unit)` → specializationID. **SecretWhenUnitIdentityRestricted** | SpecializationInfoDocumentation.lua:121 | The global is missing on Forever. Blizzard's own Mainline inspect paper-doll, which also loads for camelot, calls `C_SpecializationInfo.GetInspectSpecialization` (Blizzard_InspectUI/Mainline/InspectPaperDollFrame.lua:35). Use `D.InspectSpecID(unit)` |
+| `GetSpecializationInfoByID` | Data.StatsFor | verified exists; values **unverifiable** | `(specID [, sex])` → id, name, description, icon, role(5), classFile, className | [KBIR] GlobalAPI.lua:5868; [WIKI] [API_GetSpecializationInfoByID](https://warcraft.wiki.gg/wiki/API_GetSpecializationInfoByID) | Blizzard calls it with `(specID, sex)` (InspectPaperDollFrame.lua:47). Whether Forever has specs at all is open: Pawn 2.14.1 sets `VgerCore.SpecsExist` false for build 16001 (VgerCore/VgerCore.lua:49), and the spec IDs 65/66/70/262-264/102-105 need in-game confirmation |
+| `NotifyInspect` | Inspect.Pump | verified | `(unit)` | GlobalAPI.lua:6236; [WIKI] [API_NotifyInspect](https://warcraft.wiki.gg/wiki/API_NotifyInspect) | The server may throttle requests with no event; the 4 s timeout covers that. Blizzard's Camelot inspect frame calls it (Blizzard_InspectUI/Camelot/Blizzard_InspectUI.lua:44,126) |
+| `CanInspect` | Inspect.Pump | verified | `(unit [, showError])` → bool | GlobalAPI.lua:5023 | — |
+| `CheckInteractDistance` | Inspect.InRange | verified | `(unit, distIndex)` → inRange. Index 1 = 28 yd (compare achievements) | GlobalAPI.lua:5076; [WIKI] [API_CheckInteractDistance](https://warcraft.wiki.gg/wiki/API_CheckInteractDistance) | **Not restricted out of combat.** Since the 10.2.0 hotfix (2023-11-16) it is protected *in combat* for insecure code; querying enemies in combat was re-allowed 2023-12-11. The 1.60.1 diff doesn't mention it. Pump never runs in combat, so the pcall is a belt-and-braces guard |
+| `ClearInspectPlayer` | Inspect | verified | `()` | GlobalAPI.lua:5092 | Blizzard calls it in InspectFrame OnHide unless `PlayerSpellsFrame:IsInspecting()` (Camelot/Blizzard_InspectUI.lua:150) |
+| `GetInventoryItemLink` / `GetInventoryItemID` | Inspect.ReadItems, AntiGrief | verified | `(unit, slot)` → link / itemID | GlobalAPI.lua:5494 | — |
+| `GetLootRollItemLink` | AntiGrief OnStartLootRoll | verified | `(rollID)` → link | GlobalAPI.lua:5559 | — |
+| `UnitGUID` | Inspect, AntiGrief | verified (with caveat) | `(unit)` → guid. **SecretWhenUnitIdentityRestricted** | APIDoc/UnitDocumentation.lua:1241 | Could be secret in restricted contexts. Whether that applies to group members out of combat is **unverifiable offline** |
+| `UnitClass` | Inspect.Basic | verified (with caveat) | `(unit)` → className, classFile, classID. SecretWhenUnitIdentityRestricted | UnitDocumentation.lua:911 | as above |
+| `UnitLevel`, `UnitIsUnit`, `UnitIsPlayer`, `UnitIsConnected`, `UnitName` | Inspect, AntiGrief | verified | standard | UnitDocumentation.lua:2474, 2410, 2271, 1855, 2489 | — |
+| `GetUnitName` | Inspect, AntiGrief | verified | `(unit, showServerName)` → "Name" or "Name-Realm" | [KBIR] FrameXML.lua:2115 (Lua-defined) | With `true` it adds "-Realm" only for players from another realm. Whether loot-chat names carry the realm the same way is **unverifiable offline**. `UnitByName`'s short-name fallback covers both cases |
+| `Ambiguate` | AntiGrief | verified | `(fullName, context)` → name | GlobalAPI.lua (`Ambiguate`) | — |
+| `IsInGroup` / `IsInRaid` / `GetNumGroupMembers` / `GetNumSubgroupMembers` | Inspect, AntiGrief | verified | standard | GlobalAPI.lua:6069, 6075 | `LE_PARTY_CATEGORY_INSTANCE = 2` ([KBIR] LuaEnum.lua:10188) |
+| `InCombatLockdown` | Inspect.Pump | verified | `()` → bool | GlobalAPI.lua:6014 | — |
+| `C_ChatInfo.SendChatMessage` | AntiGrief announce | verified | `(message, chatType?, languageID?, target?)`. **HasRestrictions** | APIDoc/ChatInfoDocumentation.lua:564 | **Use the C_ChatInfo version.** The global `SendChatMessage` is only a shim (Blizzard_DeprecatedChatInfo/Deprecated_ChatInfo.lua:8) that loads while `loadDeprecationFallbacks` = 1. PARTY/RAID/INSTANCE_CHAT need no hardware event (only SAY/YELL/EMOTE outside instances do, per [WIKI] notes). Before sending, check `C_ChatInfo.InChatMessagingLockdown()` (ChatInfoDocumentation.lua:293), because a blocked protected call is not an error `pcall` can catch |
+| `C_ChatInfo.InChatMessagingLockdown` | (recommended) | verified | `()` → isRestricted | ChatInfoDocumentation.lua:293 | "Returns true if API security restrictions regarding chat messaging are in effect." |
+| `C_AddOns.IsAddOnLoaded` | Pawn.lua | verified | `(name)` → loadedOrLoading, loaded | APIDoc/AddOnsDocumentation.lua:322 | — |
+| `RaidNotice_AddMessage` | AntiGrief Alert | **changed** | `(noticeFrame, text, colorInfo, displayTime)` | Blizzard_DeprecatedRaidWarning/Deprecated_RaidWarning.lua:8 | Now a **deprecation shim** that forwards to `RaidWarningUtil.AddMessage`. It is missing when `loadDeprecationFallbacks` = 0. Use `D.ShowBanner(text, color)` |
+| `RaidWarningUtil.AddMessage` | Data D.ShowBanner | verified | `(textString, colorInfo, displayTime?, messageType?)` | Blizzard_RaidWarning/RaidWarningUtil.lua:27 | Calls `RaidWarningFrame:AddMessage`. Blizzard_RaidWarning has `AllowLoad: Game` and no game-type limit |
+| `RaidWarningFrame` | AntiGrief | verified | frame | Blizzard_RaidWarning/RaidWarning.xml:12 | — |
+| `PlaySound` + `SOUNDKIT.RAID_WARNING` | AntiGrief | verified | `PlaySound(soundKitID, channel, …)`. `RAID_WARNING = 8959` | Blizzard_SharedXML/Mainline/SoundKitConstants.lua:84 | "Master" is a valid channel |
+| `ChatTypeInfo["RAID_WARNING"]` | AntiGrief | verified | table (colours filled at runtime) | Blizzard_ChatFrameBase/Shared/ChatTypeInfoConstants.lua:47 | — |
+| `issecretvalue` | AntiGrief, Data | verified | `(value)` → bool | GlobalAPI.lua:6874 | Exists on 1.60.1. Secrets are active on Forever ([WIKI] notes, 2026-09-15) |
+| `C_Timer.After` / `C_Timer.NewTicker` | Inspect, AntiGrief | verified | standard | GlobalAPI.lua | — |
+| `GetLocale`, `GetTime`, `CreateFrame`, `wipe`, `date`, `time` | various | verified | standard | GlobalAPI.lua | — |
+| `InspectFrame` | Inspect | verified | frame, nil until Blizzard_InspectUI loads | Blizzard_InspectUI/Camelot/Blizzard_InspectUI.xml:13 | The nil check is needed and present |
+
+## Events
+
+| Event | Used in | Status | Payload | Source | Notes |
+|---|---|---|---|---|---|
+| `ADDON_LOADED` | AntiGrief | verified | addOnName, containsBindings | [KBIR] Events.lua | — |
+| `GROUP_ROSTER_UPDATE`, `PLAYER_ENTERING_WORLD` | AntiGrief | verified | — / isInitialLogin, isReloadingUi | Events.lua | — |
+| `INSPECT_READY` | Inspect | verified | inspecteeGUID | APIDoc/PaperDollInfoDocumentation.lua:352 | — |
+| `UNIT_INVENTORY_CHANGED` | AntiGrief | verified | unitTarget | APIDoc/UnitDocumentation.lua:4343 | Whether it fires for party members you haven't inspected is **unverifiable offline** |
+| `START_LOOT_ROLL` | AntiGrief | verified | rollID, rollTime, lootHandle? | APIDoc/LootDocumentation.lua:406 | — |
+| `CHAT_MSG_LOOT` | AntiGrief | verified | text, playerName, languageName, … | APIDoc/ChatInfoDocumentation.lua:1816 | `text` and `playerName` are **not** `NeverSecret`, so they can be secret. The `issecretvalue` guard is required |
+
+## Global strings and constants (enUS, [KBIR] GlobalStrings/enUS.lua)
+
+| Name | Used in | Status | Value | Line | Notes |
+|---|---|---|---|---|---|
+| `LOOT_ROLL_NEED` | AntiGrief | **changed vs spec text** | `"|HlootHistory:%d|h[Loot]|h: %s has selected Need for: %s"` | 13906 | Three arguments, not two: a loot-history hyperlink and roll ID come first. ParseNeed still works because it identifies captures by content (checked offline against the real string). **The test stub uses the spec's two-argument form** |
+| `LOOT_ROLL_ROLLED_NEED` | AntiGrief | **changed vs spec text** | `"|HlootHistory:%d|h[Loot]|h: Need Roll - %d for %s by %s"` | 13916 | Four arguments. Parses correctly |
+| `LOOT_ROLL_ROLLED_NEED_ROLE_BONUS` | AntiGrief | verified | `"Need Roll - %d for %s by %s + Role Bonus"` | 13917 | Defined, with no history prefix |
+| `LOOT_ROLL_NEED_SELF` | (not matched) | verified | `"|HlootHistory:%d|h[Loot]|h: You have selected Need for: %s"` | 13907 | Doesn't match the LOOT_ROLL_NEED pattern ("You have" ≠ "… has"). Whether your *own* rolled-result line uses your name or "You" (there is no `LOOT_ROLL_ROLLED_NEED_SELF` string) is **unverifiable offline**. Judge drops the player's own unit either way |
+| `ITEM_SPELL_TRIGGER_ONEQUIP` / `_ONUSE` / `_ONPROC` | Rules | verified | "Equip:" / "Use:" / "Chance on hit:" | 13038 | — |
+| `ITEM_MOD_*_SHORT` keys | Data STAT_BUCKETS | **changed** | see Data.lua comment | e.g. 12950 | `ITEM_MOD_SPELL_RESISTANCE_ALL_SCHOOLS_SHORT`, `ITEM_MOD_CRIT_TAKEN_SPELL_RATING_SHORT` and `ITEM_MOD_HIT_TAKEN_SPELL_RATING_SHORT` exist and were wrongly caught by the substring "SPELL". The per-school `*_DAMAGE_DONE_SHORT` keys exist and were not caught. Whether Forever item stats really use the school or spell-power keys is **unverifiable offline**. Pawn 2.14.0 says spell hit, crit and haste "were removed from items in Forever" (Readme.md:98) |
+| `INVTYPE_*` equip locations | Data | verified | e.g. `INVTYPE_NON_EQUIP_IGNORE = ""`, `INVTYPE_RANGEDRIGHT`, `INVTYPE_RELIC`, `INVTYPE_THROWN` | 12613 ff. | — |
+| `INVSLOT_RANGED` | Data | verified | 18 | [BUI] Blizzard_FrameXMLBase/Constants.lua:153 | **The slot exists on Forever.** The Camelot inspect paper doll has `InspectRangedSlot` (Blizzard_InspectUI/Camelot/InspectPaperDollFrame.xml:310), and Pawn sets `RangedSlotExists` for Forever (VgerCore.lua:50). The 1.60.1 diff adds `UnitUsesAmmo` |
+| `LOCALIZED_CLASS_NAMES_MALE` | Data | verified | `LocalizedClassList(false)` | Blizzard_FrameXMLBase/Constants.lua:37 | Forever's class list is the original nine (Blizzard_FrameXMLBase/Camelot/Constants.lua `CLASS_SORT_ORDER`). Data covers all nine tokens |
+| `Enum.ItemClass` | Data | verified | Weapon 2, Armor 4 | APIDoc/ItemConstantsDocumentation.lua:269 | — |
+| `Enum.ItemArmorSubclass` | Data | verified | Cloth 1, Leather 2, Mail 3, Plate 4, Shield 6, Libram 7, Idol 8, Totem 9 | ItemConstantsDocumentation.lua:227 | Same as spec numbers |
+| `Enum.ItemWeaponSubclass` | Data | verified | Axe1H 0, Axe2H 1, Bows 2, Guns 3, Mace1H 4, Mace2H 5, Polearm 6, Sword1H 7, Sword2H 8, Staff 10, Unarmed 13, Generic 14, Dagger 15, Thrown 16, Crossbow 18, Wand 19, Fishingpole 20 | ItemConstantsDocumentation.lua:618 | Same as spec numbers |
+
+## Pawn (2.14.1, installed copy; closes the spec's "Open items to verify")
+
+| API | Used in | Status | Signature & returns | Source (Pawn folder) | Notes |
+|---|---|---|---|---|---|
+| `PawnGetItemData` | Pawn.lua Score | verified | `(ItemLink)` → Item table, or nil (non-item link, item can't have stats, or **not in the WoW item cache**) | Pawn.lua:1324; uncached bail-out ~1354 | **Uncached items:** returns nil, so they need the same retry as the built-in rules. Nil already means "can't tell" |
+| `PawnGetSingleValueFromItem` | Pawn.lua Score | verified | `(Item, ScaleName)` → Value, UnenchantedValue. A visible scale with no value returns `0, 0`. A hidden scale is computed on the fly | Pawn.lua:1690 | Works for scales that aren't visible to the current character |
+| `PawnGetAllScalesEx` | Pawn.lua ScalesForClass | verified | `()` → sorted array of `{ Name, LocalizedName, Header, IsVisible, IsProvider }` | Pawn.lua:5223 | **Hidden scales are returned** (IsVisible=false). Only scales from inactive providers are left out. **Before Pawn initializes** it calls `VgerCore.Fail(...)` (Pawn.lua:5224), which *prints* "ERROR: Can't get scale list until Pawn is initialized" to chat and returns nil. It doesn't raise an error, so `pcall` won't hide it. Check the global `PawnIsInitialized` (set at Pawn.lua:490) first |
+| Scale naming | Pawn.lua | verified | `"\"<Provider>\":<CLASSTOKEN><specIndex>"`, e.g. `"Classic":WARRIOR1` | Pawn.lua:5721 (`PawnGetProviderScaleName`), 5824 (`UnlocalizedClassName .. (SpecID or "")`) | On Forever only the **"Classic"** provider loads (Pawn.toc:53 `ClassicHawsJon.lua [AllowLoadGameType classic, camelot]`; AskMrRobot is excluded for camelot, Pawn.toc:52). Forever scales (ClassicHawsJon.lua:324-590): DRUID1-4 (Balance, Feral DPS, Feral Tank, Resto), HUNTER1-3, MAGE1-3, PALADIN1-3, PRIEST1-3, ROGUE1-3 plus `ROGUE` (no spec), SHAMAN1-3, WARLOCK1-3, WARRIOR1-3. Spec numbers are **per-class indices**, not spec IDs. Matching the uppercase class token is correct (no token is a substring of another). User-made scales whose names contain the token also match |
+| `PawnIsInitialized` | (recommended) | verified | global bool | Pawn.lua:490 | — |
+
+## In-game-only checks
+
+1. `/dump C_SpecializationInfo.GetSpecialization()` and `/dump C_SpecializationInfo.GetInspectSpecialization("party1")` after an inspect. Does Forever return specs at all, and are the IDs 65/66/70, 262-264, 102-105?
+2. A real Need line: confirm `CHAT_MSG_LOOT` text matches `LOOT_ROLL_NEED` with the `|HlootHistory:` prefix, whether the player name has a realm suffix, colour codes or a `|Hplayer:` link, and what your own rolled-result line looks like.
+3. Item link colour format on Forever (`|cnIQ4:` vs `|cffRRGGBB`). Both are handled.
+4. `C_Item.GetItemStats` keys on Forever items: do spell power and healing come back as stats (which keys?) or only as Equip: lines?
+5. `C_TooltipInfo.GetHyperlink(link).lines[i].leftText` on a vanilla-style item with Equip: lines.
+6. Is `CHAT_MSG_LOOT` text ever secret in dungeons or raids? Is `UnitGUID`/`UnitClass` of group members ever secret (e.g. GROUP_ROSTER_UPDATE mid-encounter)?
+7. Does `UNIT_INVENTORY_CHANGED` fire for party/raid members?
+8. Announce: `C_ChatInfo.InChatMessagingLockdown()` value inside instances and encounters; does a PARTY/INSTANCE_CHAT send work out of combat?
+9. Banner via `RaidWarningUtil.AddMessage` shows; also test with `/console loadDeprecationFallbacks 0`.
+10. Does Forever's loot frame grey out Need for unusable items (spec's open question)?
+11. Pawn: `/dump PawnGetAllScalesEx()` shows the `"Classic":<CLASS><n>` names; scores for an uncached item return nil, then a number after the retry.
+12. Ranged slot 18: `GetInventoryItemLink("party1", 18)` returns hunters' bows and paladins' librams after an inspect.
