@@ -1,5 +1,5 @@
--- AntiGrief: minimap button. A black disc with a red "AG" in the standard
--- minimap-button ring. Click opens a menu (Log / Settings); drag moves it
+-- AntiGrief: minimap button. The AntiGrief logo (media/minimap.tga) in the
+-- standard minimap-button ring. Click opens a menu (Log / Settings); drag moves it
 -- around the minimap edge. No libraries: the layout and
 -- placement math follow the common LibDBIcon approach.
 --
@@ -18,6 +18,8 @@ local RADIUS = 5   -- how far outside the minimap edge the button centre sits
 local RING_TEX      = 136430 -- Interface\Minimap\MiniMap-TrackingBorder
 local DISC_TEX      = 136467 -- Interface\Minimap\UI-Minimap-Background
 local HIGHLIGHT_TEX = 136477 -- Interface\Minimap\UI-Minimap-ZoomButton-Highlight
+-- Our logo (64x64 TGA with alpha; the client finds the extension itself)
+local ICON_TEX      = "Interface\\AddOns\\AntiGrief\\media\\minimap"
 
 local button -- created once in Init
 
@@ -116,10 +118,18 @@ local function Create()
   disc:SetVertexColor(0, 0, 0, 1) -- tint the round background solid black
   disc:SetPoint("CENTER", b, "CENTER", 0, 0)
 
-  local text = b:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-  text:SetPoint("CENTER", b, "CENTER", 0, 0)
-  text:SetText("AG")
-  text:SetTextColor(1, 0.15, 0.15)
+  -- Logo over the black disc. If the client refuses the file, fall back to
+  -- the old red "AG" text on the disc.
+  local icon = b:CreateTexture(nil, "ARTWORK")
+  icon:SetSize(24, 24)
+  icon:SetPoint("CENTER", b, "CENTER", 0, 0)
+  if icon:SetTexture(ICON_TEX) == false then
+    icon:Hide()
+    local text = b:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    text:SetPoint("CENTER", b, "CENTER", 0, 0)
+    text:SetText("AG")
+    text:SetTextColor(1, 0.15, 0.15)
+  end
 
   local ring = b:CreateTexture(nil, "OVERLAY")
   ring:SetSize(50, 50)

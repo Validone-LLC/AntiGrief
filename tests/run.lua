@@ -1887,19 +1887,30 @@ end)
 local function mmButton() return rawget(_G, "AntiGriefMinimapButton") end
 local function near(a, b, what) ok(math.abs(a - b) < 0.01, ("%s: expected %s, got %s"):format(what, b, a)) end
 
-test("minimap: black disc with red AG on the minimap, shown at 225 degrees by default", function()
+local ICON_PATH = "Interface\\AddOns\\AntiGrief\\media\\minimap"
+
+test("minimap: AntiGrief logo on a black disc, shown at 225 degrees by default", function()
   local b = mmButton()
   ok(b, "button created")
   eq(b.parent, Minimap, "parented to the minimap")
   ok(b:IsShown(), "shown")
-  local text, disc
+  local icon, disc, text
   for _, r in ipairs(b.regions) do
-    if r.kind == "FontString" then text = r end
+    if r.texture == ICON_PATH then icon = r end
     if r.texture == 136467 then disc = r end
+    if r.kind == "FontString" then text = r end
   end
-  eq(text.text, "AG", "label")
-  eq(text.textColor[1], 1, "red"); ok(text.textColor[2] < 0.3 and text.textColor[3] < 0.3, "red, not orange/pink")
+  ok(icon, "logo texture set")
+  eq(text, nil, "no fallback text when the logo loads")
   eq(disc.vertexColor[1] + disc.vertexColor[2] + disc.vertexColor[3], 0, "disc tinted black")
+  local f = io.open(path("media/minimap.tga"), "rb")
+  ok(f, "media/minimap.tga ships with the addon")
+  if f then
+    local hdr = f:read(18); f:close()
+    eq(hdr:byte(3), 2, "uncompressed true-colour TGA")
+    eq(hdr:byte(13) + hdr:byte(14) * 256, 64, "64 wide"); eq(hdr:byte(15) + hdr:byte(16) * 256, 64, "64 high")
+    eq(hdr:byte(17), 32, "32-bit with alpha")
+  end
   eq(ns.db.minimapButton, true, "default on"); eq(ns.db.minimapAngle, 225, "default angle")
   local p = b.point
   eq(p[1], "CENTER"); eq(p[2], Minimap); eq(p[3], "CENTER")
@@ -2041,6 +2052,20 @@ test("minimap: tooltip shows status and how to use it", function()
   ok(GameTooltip.shown, "shown")
   b.scripts.OnLeave(b)
   ok(not GameTooltip.shown, "hidden on leave")
+end)
+
+test("minimap: if the logo file can't load, the button shows the red AG text instead", function()
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  S.missingTextures = { [ICON_PATH] = true }
+  loadAddon()
+  S.fire("ADDON_LOADED", ADDON)
+  local b = mmButton()
+  ok(b, "button still created")
+  local text
+  for _, r in ipairs(b.regions) do if r.kind == "FontString" then text = r end end
+  ok(text, "fallback label")
+  eq(text.text, "AG", "label")
+  eq(text.textColor[1], 1, "red"); ok(text.textColor[2] < 0.3 and text.textColor[3] < 0.3, "red, not orange/pink")
 end)
 
 test("minimap: no minimap frame (UI replacement) -> no button, no error, addon works", function()

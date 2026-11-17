@@ -77,7 +77,12 @@ local function NewRegion(kind)
   function r:SetText(t) self.text = t end
   function r:SetTextColor(...) self.textColor = { ... } end
   function r:SetVertexColor(...) self.vertexColor = { ... } end
-  function r:SetTexture(t) self.texture = t end
+  -- returns false for paths listed in S.missingTextures, like the client
+  function r:SetTexture(t)
+    if S.missingTextures and S.missingTextures[t] then return false end
+    self.texture = t
+    return true
+  end
   return r
 end
 
