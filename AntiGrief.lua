@@ -247,7 +247,10 @@ local function DedupeKey(who, link)
   return (who.guid or who.name or "?") .. "|" .. item
 end
 
-local function Alert(who, link, findings, maxSev, itemNotLoaded)
+-- Logs a misfit Need (any severity) and, when `notify` (at or above the
+-- alert threshold), also prints it, shows the banner, plays the sound and
+-- announces if enabled.
+local function Alert(who, link, findings, maxSev, itemNotLoaded, notify)
   if not findings or #findings == 0 or not D.SEV_COLOR[maxSev] then return end
   local now = GetTime()
   PruneOlder(recent, now, DEDUPE_WINDOW)
@@ -256,6 +259,12 @@ local function Alert(who, link, findings, maxSev, itemNotLoaded)
   recent[key] = now
 
   table.sort(findings, function(a, b) return a.sev > b.sev end)
+  if type(ns.db.log) ~= "table" then ns.db.log = {} end
+  local log = ns.db.log
+  table.insert(log, 1, { t = time(), who = who.name or "?", class = who.class, item = link, sev = maxSev, why = findings[1].text })
+  while #log > LOG_MAX do table.remove(log) end
+  if not notify then return end
+
   local short = Short(who.name)
   Print(("|c%s%s|r rolled NEED on %s - may be griefing loot"):format(D.SEV_COLOR[maxSev], short, link))
   for _, f in ipairs(findings) do
@@ -281,11 +290,6 @@ local function Alert(who, link, findings, maxSev, itemNotLoaded)
       pcall(send, ("[AntiGrief] %s's Need on %s doesn't look like a fit: %s"):format(short, link, findings[1].text), channel)
     end
   end
-
-  if type(ns.db.log) ~= "table" then ns.db.log = {} end
-  local log = ns.db.log
-  table.insert(log, 1, { t = time(), who = who.name or "?", class = who.class, item = link, sev = maxSev, why = findings[1].text })
-  while #log > LOG_MAX do table.remove(log) end
 end
 
 local function Judge(name, link, attempt)
@@ -304,8 +308,8 @@ local function Judge(name, link, attempt)
   local who = Inspect.Who(unit)
   if not who then return end
   local findings, maxSev = Rules.Evaluate(link, who)
-  if findings and maxSev >= (ns.db.minSeverity or 2) then
-    Alert(who, link, findings, maxSev, not D.GetItemInfo(link))
+  if findings and maxSev >= D.LOW then
+    Alert(who, link, findings, maxSev, not D.GetItemInfo(link), maxSev >= (ns.db.minSeverity or 2))
   end
 end
 
@@ -342,20 +346,22 @@ local function PruneNeeded(now)
   end
 end
 
-local function LogWin(who, link, findings, maxSev)
+-- Logs a misfit Need win (any severity); prints it when `notify`
+local function LogWin(who, link, findings, maxSev, notify)
   table.sort(findings, function(a, b) return a.sev > b.sev end)
-  Print(("|c%s%s|r won %s with Need - doesn't look like a fit"):format(D.SEV_COLOR[maxSev], Short(who.name), link))
-  for _, f in ipairs(findings) do
-    Line(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
-  end
   if type(ns.db.log) ~= "table" then ns.db.log = {} end
   local log = ns.db.log
   table.insert(log, 1, { t = time(), kind = "won", who = who.name or "?", class = who.class, item = link,
     sev = maxSev, why = findings[1].text })
   while #log > LOG_MAX do table.remove(log) end
+  if not notify then return end
+  Print(("|c%s%s|r won %s with Need - doesn't look like a fit"):format(D.SEV_COLOR[maxSev], Short(who.name), link))
+  for _, f in ipairs(findings) do
+    Line(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
+  end
 end
 
--- Judge a confirmed Need win; logs it when the item doesn't fit (same threshold as alerts)
+-- Judge a confirmed Need win: any misfit is logged, printed at the alert threshold
 local function JudgeWin(name, link, attempt)
   if not ns.db or not ns.db.enabled then return end
   local unit = UnitByName(name)
@@ -368,8 +374,8 @@ local function JudgeWin(name, link, attempt)
   local who = Inspect.Who(unit)
   if not who then return end
   local findings, maxSev = Rules.Evaluate(link, who)
-  if findings and #findings > 0 and D.SEV_COLOR[maxSev] and maxSev >= (ns.db.minSeverity or 2) then
-    LogWin(who, link, findings, maxSev)
+  if findings and #findings > 0 and D.SEV_COLOR[maxSev] then
+    LogWin(who, link, findings, maxSev, maxSev >= (ns.db.minSeverity or 2))
   end
 end
 
@@ -547,16 +553,63 @@ local HELP = {
   "/ag sound | screen | announce | pawn | minimap - toggle",
   "/ag history - open the AG Logs chat tab with the full flag history",
   "/ag log | clear - show recent flags here, or clear the log history",
+  "/ag feedback - Discord link for feedback and bug reports",
   "Tip: a chat tab named AntiGrief or AG Logs receives all AntiGrief messages",
 }
 
--- One flag-log entry as a chat line
-local function LogLine(e)
-  local when = (type(e.t) == "number" and date) and date("%m/%d %H:%M", e.t) or "?"
-  local what = (e.kind == "won") and ("%s won %s"):format(tostring(e.who), tostring(e.item))
-    or ("%s  %s"):format(tostring(e.who), tostring(e.item))
-  return ("%s  %s  [%s] %s"):format(when, what, D.SEV_NAME[e.sev] or "?", e.why or "")
+-- History layout: one block per drop (item), oldest first:
+--   11/16 21:04  [item]
+--      - Bob is High: <reason>          (severity colour)
+--      - Cy is Low: <reason>
+--      -- Bob won and is High for: <reason>   (WIN_COLOR)
+local WIN_COLOR = "ffff66ff"
+
+-- Groups log entries (stored newest first) into drops, oldest first. Entries
+-- for the same item within ROLL_MEMORY of the drop's first entry are one drop.
+local function GroupDrops(log)
+  local drops, open = {}, {}
+  for i = #log, 1, -1 do
+    local e = log[i]
+    local key = (type(e.item) == "string") and ItemKey(e.item) or tostring(e.item)
+    local d = open[key]
+    if not d or (type(e.t) == "number" and type(d.t) == "number" and e.t - d.t > ROLL_MEMORY) then
+      d = { t = e.t, item = e.item, needs = {}, wins = {} }
+      drops[#drops + 1] = d
+      open[key] = d
+    end
+    local list = (e.kind == "won") and d.wins or d.needs
+    list[#list + 1] = e
+  end
+  return drops
 end
+
+-- Appends the chat lines for one drop to `out`
+local function DropLines(d, out)
+  local when = (type(d.t) == "number" and date) and date("%m/%d %H:%M", d.t) or "?"
+  out[#out + 1] = ("%s  %s"):format(when, tostring(d.item))
+  for _, e in ipairs(d.needs) do
+    out[#out + 1] = ("   |c%s- %s is %s: %s|r"):format(D.SEV_COLOR[e.sev] or GREY_COLOR,
+      Short(e.who), D.SEV_NAME[e.sev] or "?", e.why or "")
+  end
+  for _, e in ipairs(d.wins) do
+    out[#out + 1] = ("   |c%s-- %s won and is %s for: %s|r"):format(WIN_COLOR,
+      Short(e.who), D.SEV_NAME[e.sev] or "?", e.why or "")
+  end
+end
+
+-- Lines for the last `maxDrops` drops (all if nil), oldest first, with a
+-- blank line between drops
+local function HistoryLines(maxDrops)
+  local drops, out = GroupDrops(ns.db.log), {}
+  local first = maxDrops and math.max(1, #drops - maxDrops + 1) or 1
+  for i = first, #drops do
+    if i > first then out[#out + 1] = " " end
+    DropLines(drops[i], out)
+  end
+  return out, #drops
+end
+
+local RECENT_DROPS = 5 -- /ag log and the no-tab fallback show this many
 
 -- Opens the "AG Logs" chat tab (creating it if needed) and fills it with the
 -- whole saved flag log, oldest first, the way chat reads. The tab then keeps
@@ -571,9 +624,9 @@ local function ShowHistory()
   end
   local log = ns.db.log
   if not frame then
-    Print("couldn't open an AG Logs chat tab (no free chat window?); recent flags:")
+    Print("couldn't open an AG Logs chat tab (no free chat window?); recent drops:")
     if #log == 0 then Line("no flags logged") end
-    for i = 1, math.min(#log, 15) do Line(LogLine(log[i])) end
+    for _, l in ipairs((HistoryLines(RECENT_DROPS))) do Line(l) end
     return
   end
   if not created and docked and FCF_SelectDockFrame then pcall(FCF_SelectDockFrame, frame) end
@@ -582,9 +635,54 @@ local function ShowHistory()
     frame:AddMessage(PREFIX .. "flag history: no flags logged")
     return
   end
-  frame:AddMessage(PREFIX .. ("flag history: %d %s, oldest first (keeps the last %d)"):format(
-    #log, #log == 1 and "flag" or "flags", LOG_MAX))
-  for i = #log, 1, -1 do frame:AddMessage("   " .. LogLine(log[i])) end
+  local lines, drops = HistoryLines()
+  frame:AddMessage(PREFIX .. ("flag history: %d %s, oldest first (keeps the last %d entries)"):format(
+    drops, drops == 1 and "drop" or "drops", LOG_MAX))
+  for _, l in ipairs(lines) do frame:AddMessage(l) end
+end
+
+-- Feedback: a popup with the Discord invite in a pre-selected edit box, so
+-- the player can Ctrl+C it (chat links can't be copied). Falls back to
+-- printing the link if StaticPopup isn't available.
+local DISCORD_URL = "https://discord.gg/XvsKbTEv7"
+ns.DISCORD_URL = DISCORD_URL
+
+local function FeedbackEditBox(dialog)
+  if dialog.GetEditBox then return dialog:GetEditBox() end -- 11.2+ StaticPopup
+  return dialog.editBox or dialog.EditBox
+end
+
+local function ShowFeedback()
+  if type(StaticPopupDialogs) == "table" and StaticPopup_Show then
+    if not StaticPopupDialogs.ANTIGRIEF_FEEDBACK then
+      StaticPopupDialogs.ANTIGRIEF_FEEDBACK = {
+        text = "AntiGrief feedback and bug reports: join the Discord.\nPress Ctrl+C to copy the link, then paste it into your browser.",
+        button1 = CLOSE or "Close",
+        hasEditBox = true,
+        editBoxWidth = 260,
+        OnShow = function(self)
+          local eb = FeedbackEditBox(self)
+          if not eb then return end
+          eb:SetText(DISCORD_URL)
+          eb:HighlightText()
+          eb:SetFocus()
+        end,
+        -- read-only: typing puts the link back and re-selects it
+        EditBoxOnTextChanged = function(eb)
+          if eb:GetText() ~= DISCORD_URL then eb:SetText(DISCORD_URL) end
+          eb:HighlightText()
+        end,
+        EditBoxOnEnterPressed = function(eb) eb:GetParent():Hide() end,
+        EditBoxOnEscapePressed = function(eb) eb:GetParent():Hide() end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+      }
+    end
+    if pcall(StaticPopup_Show, "ANTIGRIEF_FEEDBACK") then return end
+  end
+  Print("feedback and bug reports: " .. DISCORD_URL)
 end
 
 local function PrintHelp()
@@ -674,8 +772,8 @@ SlashCmdList.ANTIGRIEF = function(input)
   elseif cmd == "log" then
     local log = ns.db.log
     if #log == 0 then Print("no flags logged"); return end
-    Print("recent flags:")
-    for i = 1, math.min(#log, 15) do Line(LogLine(log[i])) end
+    Print("recent drops:")
+    for _, l in ipairs((HistoryLines(RECENT_DROPS))) do Line(l) end
 
   elseif cmd == "history" then
     ShowHistory()
@@ -686,6 +784,9 @@ SlashCmdList.ANTIGRIEF = function(input)
     local tab = FindChatWindow(LOG_TAB)
     if tab and tab.Clear then pcall(tab.Clear, tab) end
     Print(("log history cleared (%d %s removed)"):format(n, n == 1 and "entry" or "entries"))
+
+  elseif cmd == "feedback" or cmd == "discord" then
+    ShowFeedback()
 
   else
     PrintHelp()

@@ -1106,7 +1106,7 @@ test("slash commands run without errors", function()
   cmd("log"); ok(S.chatCount("no flags logged") == 1, "empty log")
   ns.db.minSeverity = 2
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  cmd("log"); ok(S.chatCount("recent flags:") == 1, "log")
+  cmd("log"); ok(S.chatCount("recent drops:") == 1, "log")
   cmd("clear"); eq(#ns.db.log, 0, "cleared")
 end)
 
@@ -1670,9 +1670,10 @@ test("wins: Need then won on a misfit -> chat line and a 'won' log entry", funct
   ok(e.why:find("don't suit a Warrior", 1, true), "reason kept: " .. tostring(e.why))
   eq(S.chatCount("Bob|r won " .. I.spellDagger .. " with Need - doesn't look like a fit"), 1, "chat line")
   eq(#S.banners, 1, "no second banner for the win"); eq(S.sounds, 1, "no second sound")
-  -- history shows it as a win
+  -- history shows it as a win under the item
   SlashCmdList.ANTIGRIEF("log")
-  eq(S.chatCount("Bob won " .. I.spellDagger .. "  [High]"), 1, "log line reads 'Bob won [item]'")
+  eq(S.chatCount("|cffff66ff-- Bob won and is High for: stats/effects"), 1, "won line, own colour")
+  eq(S.chatCount("- Bob is High: stats/effects"), 1, "the Need line under the same item")
 end)
 
 test("wins: Need-only - a default won line without a seen Need is ignored", function()
@@ -1717,12 +1718,18 @@ test("wins: one Need is used once; another player's Need doesn't count for Bob",
   eq(wins(), 1, "the Need is consumed by the first win")
 end)
 
-test("wins: below the alert threshold or disabled -> not logged", function()
+test("wins and Needs below the alert threshold are logged quietly; disabled logs nothing", function()
   party()
   ns.db.minSeverity = 3
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest)) -- Low only for a warrior
   S.fire("CHAT_MSG_LOOT", WON("Bob", I.leatherChest))
-  eq(wins(), 0, "Low win below High threshold")
+  eq(#ns.db.log, 2, "Low Need and Low win both in the history")
+  eq(ns.db.log[2].sev, 1, "Need logged as Low"); eq(ns.db.log[1].kind, "won", "win logged")
+  eq(S.chatCount("rolled NEED"), 0, "no alert below the threshold")
+  eq(S.chatCount(" won "), 0, "no win line below the threshold")
+  eq(#S.banners, 0, "no banner"); eq(S.sounds, 0, "no sound")
+  eq(wins(), 1, "one win")
+  ns.db.log = {}
   ns.db.enabled = false
   S.fire("CHAT_MSG_LOOT", WON_NEED("Bob", 90, I.spellDagger))
   eq(wins(), 0, "disabled")
@@ -1775,15 +1782,19 @@ test("history: Log opens a new 'AG Logs' tab with the whole log, oldest first", 
   eq(W.opened[1].name, "AG Logs", "named AG Logs")
   eq(W.opened[1].noDefaultChannels, true, "no Say/Party/etc. channels in it")
   local tab = W.frames[3]
-  eq(#tab.lines, 3, "header + 2 entries")
-  ok(tab.lines[1]:find("flag history: 2 flags, oldest first (keeps the last 50)", 1, true), "header")
-  ok(tab.lines[2]:find("Bob", 1, true) and tab.lines[2]:find("[High] Warrior can't use Cloth", 1, true), "oldest first")
-  ok(tab.lines[3]:find("Cy", 1, true), "newest last")
+  -- header, [Robe] block (2 lines), blank, [Staff] block (2 lines)
+  eq(#tab.lines, 6, "header + two drops")
+  ok(tab.lines[1]:find("flag history: 2 drops, oldest first (keeps the last 50 entries)", 1, true), "header")
+  ok(tab.lines[2]:find("[Robe]", 1, true), "oldest drop first")
+  eq(tab.lines[3], "   |cffff4040- Bob is High: Warrior can't use Cloth|r", "Need line in High colour")
+  eq(tab.lines[4], " ", "blank line between drops")
+  ok(tab.lines[5]:find("[Staff]", 1, true), "newest drop last")
+  eq(tab.lines[6], "   |cffff9930- Cy is Medium: probably not an upgrade|r", "Medium colour")
   eq(#S.chat, 0, "nothing in the main chat")
   -- new AntiGrief output now goes to the AG Logs tab
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  ok(tab.lines[4]:find("rolled NEED", 1, true), "live alerts land in AG Logs")
+  ok(tab.lines[7]:find("rolled NEED", 1, true), "live alerts land in AG Logs")
 end)
 
 test("history: an existing AG Logs tab is selected and redrawn, not duplicated", function()
@@ -1795,7 +1806,7 @@ test("history: an existing AG Logs tab is selected and redrawn, not duplicated",
   local tab = W.frames[3]
   eq(#W.selected, 2, "tab selected each time"); eq(W.selected[1], tab, "the AG Logs tab")
   eq(tab.cleared, 2, "cleared before each redraw")
-  eq(#tab.lines, 3, "one copy of the history")
+  eq(#tab.lines, 6, "one copy of the history")
 end)
 
 test("history: a floating (undocked) AG Logs window is redrawn without dock selection", function()
@@ -1803,7 +1814,7 @@ test("history: a floating (undocked) AG Logs window is redrawn without dock sele
   twoFlags()
   SlashCmdList.ANTIGRIEF("history")
   eq(#W.selected, 0, "not dock-selected"); eq(#W.opened, 0, "not recreated")
-  eq(#W.frames[3].lines, 3, "filled")
+  eq(#W.frames[3].lines, 6, "filled")
 end)
 
 test("history: a closed AG Logs window is skipped and a new tab opened", function()
@@ -1823,6 +1834,38 @@ test("history: no free chat window -> recent flags in the main chat instead", fu
   rawset(_G, "FCF_OpenNewWindow", function() error("boom") end)
   SlashCmdList.ANTIGRIEF("history")
   eq(S.chatCount("couldn't open an AG Logs chat tab"), 2, "an error falls back the same way")
+end)
+
+test("history: one block per drop - every Need under the item, the winner last", function()
+  local W = chatSystem()
+  local robe, staff = "|cffa335ee|Hitem:1003::::|h[Robe]|h|r", "|cff0070dd|Hitem:2000::::|h[Staff]|h|r"
+  -- newest first, as stored; robe and staff dropped together, robe again 20 min later
+  ns.db.log = {
+    { t = 2300, kind = "won", who = "Zed", item = robe, sev = 2, why = "probably not an upgrade" },
+    { t = 2290, who = "Zed", item = robe, sev = 2, why = "probably not an upgrade" },
+    { t = 1010, kind = "won", who = "Bob-Realm", item = robe, sev = 3, why = "Warrior can't use Cloth" },
+    { t = 1008, who = "Cy", item = staff, sev = 1, why = "Staff is unusual for a Rogue" },
+    { t = 1005, who = "Ann", item = robe, sev = 1, why = "lower armor type" },
+    { t = 1000, who = "Bob-Realm", item = robe, sev = 3, why = "Warrior can't use Cloth" },
+  }
+  SlashCmdList.ANTIGRIEF("history")
+  local L = W.frames[3].lines
+  ok(L[1]:find("3 drops", 1, true), "robe, staff, robe again = 3 drops: " .. L[1])
+  ok(L[2]:find(robe, 1, true), "first drop: the robe link")
+  eq(L[3], "   |cffff4040- Bob is High: Warrior can't use Cloth|r", "needers in roll order, short names")
+  eq(L[4], "   |cffd0d070- Ann is Low: lower armor type|r", "Low colour")
+  eq(L[5], "   |cffff66ff-- Bob won and is High for: Warrior can't use Cloth|r", "winner last, own colour")
+  eq(L[6], " ")
+  ok(L[7]:find(staff, 1, true), "second drop: staff")
+  eq(L[8], "   |cffd0d070- Cy is Low: Staff is unusual for a Rogue|r")
+  eq(L[9], " ")
+  ok(L[10]:find(robe, 1, true), "a later robe is its own drop")
+  eq(L[11], "   |cffff9930- Zed is Medium: probably not an upgrade|r")
+  eq(L[12], "   |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r")
+  eq(#L, 12, "no extra lines")
+  -- /ag log shows the same layout for the recent drops
+  SlashCmdList.ANTIGRIEF("log")
+  eq(L[#L], "      |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r", "/ag log, indented once more")
 end)
 
 test("history: Clear Log History wipes the log and the AG Logs tab", function()
@@ -1864,7 +1907,7 @@ test("minimap: black disc with red AG on the minimap, shown at 225 degrees by de
   near(p[4], math.cos(math.rad(225)) * r, "x"); near(p[5], math.sin(math.rad(225)) * r, "y")
 end)
 
-test("minimap: click opens a Log / Settings / Clear Log History menu; each item does its job", function()
+test("minimap: click opens a Log / Settings / Clear Log History / Feedback menu; each item does its job", function()
   local W = chatSystem()
   ns.db.log[1] = { t = 1, who = "Bob", item = "[Robe]", sev = 3, why = "Warrior can't use Cloth" }
   local b = mmButton()
@@ -1875,18 +1918,40 @@ test("minimap: click opens a Log / Settings / Clear Log History menu; each item 
   eq(m.items[1].kind, "title"); eq(m.items[1].text, "AntiGrief")
   eq(m.items[2].text, "Log"); eq(m.items[3].text, "Settings")
   eq(m.items[4].kind, "divider")
-  eq(m.items[5].text, "Clear Log History", "Clear is the last option")
-  eq(#m.items, 5, "three choices plus title and divider")
+  eq(m.items[5].text, "Clear Log History", "Clear follows the divider")
+  eq(m.items[6].text, "Feedback", "Feedback is below Clear Log History")
+  eq(#m.items, 6, "four choices plus title and divider")
   m.items[2].fn()
   eq(#W.opened, 1, "Log opens the AG Logs tab")
   m.items[5].fn()
   eq(#ns.db.log, 0, "Clear Log History empties the log")
+  m.items[6].fn()
+  eq(#S.popups, 1, "Feedback opens the copy-link popup")
   if HAS_CONFIG then
     m.items[3].fn()
     eq(#S.cfg.opened, 1, "Settings opens the options page")
   end
   b.scripts.OnClick(b, "RightButton")
   eq(#S.menus, 2, "right-click opens the same menu")
+end)
+
+test("feedback: popup shows the Discord link selected and read-only; falls back to chat", function()
+  local url = "https://discord.gg/XvsKbTEv7"
+  SlashCmdList.ANTIGRIEF("feedback")
+  eq(#S.popups, 1, "popup shown")
+  local dialog = S.popups[1]
+  local eb = dialog:GetEditBox()
+  eq(eb.text, url, "edit box holds the invite")
+  ok(eb.highlighted and eb.focused, "selected and focused, ready for Ctrl+C")
+  eb:SetText(url .. "x")
+  eq(eb.text, url, "typing can't change the link")
+  StaticPopupDialogs.ANTIGRIEF_FEEDBACK.EditBoxOnEnterPressed(eb)
+  eq(dialog.shown, false, "Enter closes it")
+  SlashCmdList.ANTIGRIEF("discord")
+  eq(#S.popups, 2, "/ag discord is an alias")
+  StaticPopup_Show = nil
+  SlashCmdList.ANTIGRIEF("feedback")
+  eq(S.chatCount(url), 1, "no StaticPopup: link printed in chat")
 end)
 
 test("minimap: without the menu API, left-click opens settings and right-click the log", function()

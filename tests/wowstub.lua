@@ -133,6 +133,34 @@ MenuUtil = {
   end,
 }
 
+-- StaticPopup (11.2+ shape: dialog:GetEditBox()). StaticPopup_Show runs
+-- OnShow against a fake dialog and records it in S.popups.
+S.popups = {}
+StaticPopupDialogs = {}
+CLOSE = "Close"
+function StaticPopup_Show(which)
+  local info = StaticPopupDialogs[which]
+  if not info then return nil end
+  local dialog = { which = which, shown = true }
+  local eb = { text = "", highlighted = false, focused = false }
+  function eb:SetText(t)
+    self.text = t
+    if info.EditBoxOnTextChanged and not self.inChange then
+      self.inChange = true; info.EditBoxOnTextChanged(self); self.inChange = false
+    end
+  end
+  function eb:GetText() return self.text end
+  function eb:HighlightText() self.highlighted = true end
+  function eb:SetFocus() self.focused = true end
+  function eb.GetParent() return dialog end
+  function dialog.GetEditBox() return eb end
+  function dialog:Hide() self.shown = false end
+  dialog.editBox = eb
+  if info.OnShow then info.OnShow(dialog) end
+  S.popups[#S.popups + 1] = dialog
+  return dialog
+end
+
 GameTooltip = { lines = {} }
 function GameTooltip:SetOwner(owner) self.owner, self.lines = owner, {} end
 function GameTooltip:SetText(t) self.lines = { t } end

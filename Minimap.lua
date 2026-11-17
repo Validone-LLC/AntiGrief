@@ -63,7 +63,8 @@ local function OnDragUpdate()
 end
 
 -- Click menu: Log (opens the AG Logs chat tab with the flag history),
--- Settings (options page), Clear Log History (last, after a divider).
+-- Settings (options page), then after a divider Clear Log History and
+-- Feedback (Discord link in a copy box).
 -- Uses the 11.0+ Menu API (Blizzard_Menu, MenuUtil.CreateContextMenu).
 -- Returns false if the menu couldn't be shown, so the caller can fall back.
 local function MenuGenerator(_, root)
@@ -72,6 +73,7 @@ local function MenuGenerator(_, root)
   root:CreateButton("Settings", function() Slash("config") end)
   if root.CreateDivider then root:CreateDivider() end
   root:CreateButton("Clear Log History", function() Slash("clear") end)
+  root:CreateButton("Feedback", function() Slash("feedback") end)
 end
 
 local function OpenMenu(owner)
