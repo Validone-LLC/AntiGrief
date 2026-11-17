@@ -62,13 +62,16 @@ local function OnDragUpdate()
   UpdatePosition()
 end
 
--- Click menu: choose Log (recent flags in chat) or Settings (options page).
+-- Click menu: Log (opens the AG Logs chat tab with the flag history),
+-- Settings (options page), Clear Log History (last, after a divider).
 -- Uses the 11.0+ Menu API (Blizzard_Menu, MenuUtil.CreateContextMenu).
 -- Returns false if the menu couldn't be shown, so the caller can fall back.
 local function MenuGenerator(_, root)
   root:CreateTitle("AntiGrief")
-  root:CreateButton("Log", function() Slash("log") end)
+  root:CreateButton("Log", function() Slash("history") end)
   root:CreateButton("Settings", function() Slash("config") end)
+  if root.CreateDivider then root:CreateDivider() end
+  root:CreateButton("Clear Log History", function() Slash("clear") end)
 end
 
 local function OpenMenu(owner)
@@ -125,7 +128,7 @@ local function Create()
     if GameTooltip then GameTooltip:Hide() end
     if not OpenMenu(self) then
       -- no menu API: left-click options, right-click log
-      if mouse == "RightButton" then Slash("log") else Slash("config") end
+      if mouse == "RightButton" then Slash("history") else Slash("config") end
     end
   end)
   b:SetScript("OnEnter", ShowTooltip)

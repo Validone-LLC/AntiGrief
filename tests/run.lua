@@ -1621,7 +1621,7 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   ok(tab[1]:find("rolled NEED", 1, true), "headline in tab")
   eq(#S.banners, 1, "banner still shown")
   cmd("status")
-  eq(tab[#tab], "   output: AntiGrief chat tab", "status names the tab")
+  eq(tab[#tab], "   output: AntiGrief / AG Logs chat tab", "status names the tab")
 
   -- Closed window keeps its name but is neither shown nor docked
   windows[3][7], windows[3][9] = false, false
@@ -1634,6 +1634,117 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   ok(S.chat[#S.chat] ~= nil and #S.chat > mainBefore, "falls back on error")
   rawset(_G, "GetChatWindowInfo", nil)
   rawset(_G, "ChatFrame3", nil)
+end)
+
+-- Chat windows: a fake chat-window system for the AG Logs tab tests -----
+
+-- General and Combat Log, plus `extra` windows { name, shown, docked }.
+-- FCF_OpenNewWindow adds a window unless W.full is set.
+local function chatSystem(extra)
+  local W = { windows = {}, frames = {}, opened = {}, selected = {} }
+  local function add(name, shown, docked)
+    local i = #W.windows + 1
+    W.windows[i] = { name = name, shown = shown, docked = docked }
+    local fr = { lines = {}, cleared = 0 }
+    function fr:AddMessage(m) self.lines[#self.lines + 1] = m end
+    function fr:Clear() self.lines = {}; self.cleared = self.cleared + 1 end
+    rawset(_G, "ChatFrame" .. i, fr)
+    W.frames[i] = fr
+    return fr, i
+  end
+  add("General", true, true); add("Combat Log", false, true)
+  for _, w in ipairs(extra or {}) do add(w[1], w[2], w[3]) end
+  rawset(_G, "NUM_CHAT_WINDOWS", 10)
+  rawset(_G, "GetChatWindowInfo", function(i)
+    local w = W.windows[i]
+    if not w then return "", 14, 0, 0, 0, 0, false, false, false, false end
+    return w.name, 14, 0, 0, 0, 0, w.shown, false, w.docked, false
+  end)
+  rawset(_G, "FCF_OpenNewWindow", function(name, noDefaultChannels)
+    if W.full then return nil end
+    W.opened[#W.opened + 1] = { name = name, noDefaultChannels = noDefaultChannels }
+    return add(name, true, true)
+  end)
+  rawset(_G, "FCF_SelectDockFrame", function(f) W.selected[#W.selected + 1] = f end)
+  return W
+end
+
+local function twoFlags()
+  -- newest first, as Alert stores them
+  ns.db.log[1] = { t = 2000, who = "Cy", item = "[Staff]", sev = 2, why = "probably not an upgrade" }
+  ns.db.log[2] = { t = 1000, who = "Bob", item = "[Robe]", sev = 3, why = "Warrior can't use Cloth" }
+end
+
+test("history: Log opens a new 'AG Logs' tab with the whole log, oldest first", function()
+  local W = chatSystem()
+  twoFlags()
+  SlashCmdList.ANTIGRIEF("history")
+  eq(#W.opened, 1, "one window created")
+  eq(W.opened[1].name, "AG Logs", "named AG Logs")
+  eq(W.opened[1].noDefaultChannels, true, "no Say/Party/etc. channels in it")
+  local tab = W.frames[3]
+  eq(#tab.lines, 3, "header + 2 entries")
+  ok(tab.lines[1]:find("flag history: 2 flags, oldest first (keeps the last 50)", 1, true), "header")
+  ok(tab.lines[2]:find("Bob", 1, true) and tab.lines[2]:find("[High] Warrior can't use Cloth", 1, true), "oldest first")
+  ok(tab.lines[3]:find("Cy", 1, true), "newest last")
+  eq(#S.chat, 0, "nothing in the main chat")
+  -- new AntiGrief output now goes to the AG Logs tab
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  ok(tab.lines[4]:find("rolled NEED", 1, true), "live alerts land in AG Logs")
+end)
+
+test("history: an existing AG Logs tab is selected and redrawn, not duplicated", function()
+  local W = chatSystem({ { " ag logs ", false, true } })
+  twoFlags()
+  SlashCmdList.ANTIGRIEF("history")
+  SlashCmdList.ANTIGRIEF("history")
+  eq(#W.opened, 0, "no new window")
+  local tab = W.frames[3]
+  eq(#W.selected, 2, "tab selected each time"); eq(W.selected[1], tab, "the AG Logs tab")
+  eq(tab.cleared, 2, "cleared before each redraw")
+  eq(#tab.lines, 3, "one copy of the history")
+end)
+
+test("history: a floating (undocked) AG Logs window is redrawn without dock selection", function()
+  local W = chatSystem({ { "AG Logs", true, false } })
+  twoFlags()
+  SlashCmdList.ANTIGRIEF("history")
+  eq(#W.selected, 0, "not dock-selected"); eq(#W.opened, 0, "not recreated")
+  eq(#W.frames[3].lines, 3, "filled")
+end)
+
+test("history: a closed AG Logs window is skipped and a new tab opened", function()
+  local W = chatSystem({ { "AG Logs", false, false } })
+  SlashCmdList.ANTIGRIEF("history")
+  eq(#W.opened, 1, "new tab")
+  eq(W.frames[4].lines[1], "|cff40c0ffAntiGrief|r: flag history: no flags logged", "empty history message")
+end)
+
+test("history: no free chat window -> recent flags in the main chat instead", function()
+  local W = chatSystem()
+  W.full = true
+  twoFlags()
+  SlashCmdList.ANTIGRIEF("history")
+  eq(S.chatCount("couldn't open an AG Logs chat tab"), 1, "explains")
+  eq(S.chatCount("Warrior can't use Cloth"), 1, "still shows the flags")
+  rawset(_G, "FCF_OpenNewWindow", function() error("boom") end)
+  SlashCmdList.ANTIGRIEF("history")
+  eq(S.chatCount("couldn't open an AG Logs chat tab"), 2, "an error falls back the same way")
+end)
+
+test("history: Clear Log History wipes the log and the AG Logs tab", function()
+  local W = chatSystem()
+  twoFlags()
+  SlashCmdList.ANTIGRIEF("history")
+  local tab = W.frames[3]
+  SlashCmdList.ANTIGRIEF("clear")
+  eq(#ns.db.log, 0, "log emptied")
+  eq(tab.cleared, 2, "tab cleared (once by history, once by clear)")
+  eq(#tab.lines, 1, "only the confirmation left")
+  eq(tab.lines[1], "|cff40c0ffAntiGrief|r: log history cleared (2 entries removed)", "confirmation in the tab")
+  SlashCmdList.ANTIGRIEF("clear")
+  eq(tab.lines[#tab.lines], "|cff40c0ffAntiGrief|r: log history cleared (0 entries removed)", "plural on 0")
 end)
 
 -- Minimap button ----------------------------------------------------------
@@ -1661,7 +1772,9 @@ test("minimap: black disc with red AG on the minimap, shown at 225 degrees by de
   near(p[4], math.cos(math.rad(225)) * r, "x"); near(p[5], math.sin(math.rad(225)) * r, "y")
 end)
 
-test("minimap: click opens a Log / Settings menu; each item does its job", function()
+test("minimap: click opens a Log / Settings / Clear Log History menu; each item does its job", function()
+  local W = chatSystem()
+  ns.db.log[1] = { t = 1, who = "Bob", item = "[Robe]", sev = 3, why = "Warrior can't use Cloth" }
   local b = mmButton()
   b.scripts.OnClick(b, "LeftButton")
   eq(#S.menus, 1, "menu opened")
@@ -1669,9 +1782,13 @@ test("minimap: click opens a Log / Settings menu; each item does its job", funct
   eq(m.owner, b, "anchored to the button")
   eq(m.items[1].kind, "title"); eq(m.items[1].text, "AntiGrief")
   eq(m.items[2].text, "Log"); eq(m.items[3].text, "Settings")
-  eq(#m.items, 3, "two choices")
+  eq(m.items[4].kind, "divider")
+  eq(m.items[5].text, "Clear Log History", "Clear is the last option")
+  eq(#m.items, 5, "three choices plus title and divider")
   m.items[2].fn()
-  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: no flags logged", "Log prints the flag log")
+  eq(#W.opened, 1, "Log opens the AG Logs tab")
+  m.items[5].fn()
+  eq(#ns.db.log, 0, "Clear Log History empties the log")
   if HAS_CONFIG then
     m.items[3].fn()
     eq(#S.cfg.opened, 1, "Settings opens the options page")
@@ -1684,7 +1801,7 @@ test("minimap: without the menu API, left-click opens settings and right-click t
   local b = mmButton()
   MenuUtil = nil
   b.scripts.OnClick(b, "RightButton")
-  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: no flags logged", "right-click -> log")
+  eq(S.chatCount("no flags logged"), 1, "right-click -> log (history; no chat windows here, so in main chat)")
   if HAS_CONFIG then
     b.scripts.OnClick(b, "LeftButton")
     eq(#S.cfg.opened, 1, "left-click -> settings")

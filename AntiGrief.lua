@@ -21,24 +21,34 @@ local ROLL_MEMORY     = 900  -- seconds a reported rollID is remembered (rolls l
 local MARGIN_MIN, MARGIN_MAX = 0, 30 -- upgradeMargin range; matches the options slider
 
 local PREFIX = "|cff40c0ffAntiGrief|r: "
-local OUTPUT_TAB = "antigrief" -- chat window name (case-insensitive) that receives our output
+-- Chat window names (case-insensitive, trimmed) that receive our output.
+-- "AG Logs" is the tab the minimap menu's Log option opens (/ag history).
+local LOG_TAB_NAME = "AG Logs"
+local LOG_TAB      = { ["ag logs"] = true }
+local OUTPUT_TABS  = { ["antigrief"] = true, ["ag logs"] = true }
 
--- The player's "AntiGrief" chat tab if one exists, else the main chat.
--- Looked up on every message so a tab made or closed mid-session is picked up.
--- A closed window keeps its name but is neither shown nor docked, so skip it.
-local function OutputFrame()
-  if GetChatWindowInfo then
-    local max = (Constants and Constants.ChatFrameConstants and Constants.ChatFrameConstants.MaxChatWindows)
-      or NUM_CHAT_WINDOWS or 10
-    for i = 1, max do
-      local ok, name, _, _, _, _, _, shown, _, docked = pcall(GetChatWindowInfo, i)
-      if ok and type(name) == "string" and (shown or docked)
-        and name:match("^%s*(.-)%s*$"):lower() == OUTPUT_TAB then
-        local frame = _G["ChatFrame" .. i]
-        if frame and frame.AddMessage then return frame, true end
-      end
+-- First open chat window whose name is in `names`: frame, docked. A closed
+-- window keeps its name but is neither shown nor docked, so it's skipped.
+-- Looked up each time so a tab made or closed mid-session is picked up.
+local function FindChatWindow(names)
+  if not GetChatWindowInfo then return nil end
+  local max = (Constants and Constants.ChatFrameConstants and Constants.ChatFrameConstants.MaxChatWindows)
+    or NUM_CHAT_WINDOWS or 10
+  for i = 1, max do
+    local ok, name, _, _, _, _, _, shown, _, docked = pcall(GetChatWindowInfo, i)
+    if ok and type(name) == "string" and (shown or docked)
+      and names[name:match("^%s*(.-)%s*$"):lower()] then
+      local frame = _G["ChatFrame" .. i]
+      if frame and frame.AddMessage then return frame, docked and true or false end
     end
   end
+  return nil
+end
+
+-- An "AntiGrief" or "AG Logs" chat tab if one exists, else the main chat.
+local function OutputFrame()
+  local frame = FindChatWindow(OUTPUT_TABS)
+  if frame then return frame, true end
   return DEFAULT_CHAT_FRAME, false
 end
 
@@ -423,9 +433,46 @@ local HELP = {
   "/ag margin 0-30 - item-level gap for the upgrade check",
   "/ag drops - toggle the fit report on new drops (alias: hints)",
   "/ag sound | screen | announce | pawn | minimap - toggle",
-  "/ag log | clear - show or clear recent flags",
-  "Tip: a chat tab named AntiGrief receives all AntiGrief messages",
+  "/ag history - open the AG Logs chat tab with the full flag history",
+  "/ag log | clear - show recent flags here, or clear the log history",
+  "Tip: a chat tab named AntiGrief or AG Logs receives all AntiGrief messages",
 }
+
+-- One flag-log entry as a chat line
+local function LogLine(e)
+  local when = (type(e.t) == "number" and date) and date("%m/%d %H:%M", e.t) or "?"
+  return ("%s  %s  %s  [%s] %s"):format(when, tostring(e.who), tostring(e.item),
+    D.SEV_NAME[e.sev] or "?", e.why or "")
+end
+
+-- Opens the "AG Logs" chat tab (creating it if needed) and fills it with the
+-- whole saved flag log, oldest first, the way chat reads. The tab then keeps
+-- receiving new AntiGrief messages (it's one of OUTPUT_TABS).
+local function ShowHistory()
+  local frame, docked = FindChatWindow(LOG_TAB)
+  local created = false
+  if not frame and FCF_OpenNewWindow then
+    -- true = no default chat channels: the tab holds only what we add
+    local ok, f = pcall(FCF_OpenNewWindow, LOG_TAB_NAME, true)
+    if ok and type(f) == "table" and f.AddMessage then frame, created = f, true end
+  end
+  local log = ns.db.log
+  if not frame then
+    Print("couldn't open an AG Logs chat tab (no free chat window?); recent flags:")
+    if #log == 0 then Line("no flags logged") end
+    for i = 1, math.min(#log, 15) do Line(LogLine(log[i])) end
+    return
+  end
+  if not created and docked and FCF_SelectDockFrame then pcall(FCF_SelectDockFrame, frame) end
+  if frame.Clear then pcall(frame.Clear, frame) end -- redraw, don't append a second copy
+  if #log == 0 then
+    frame:AddMessage(PREFIX .. "flag history: no flags logged")
+    return
+  end
+  frame:AddMessage(PREFIX .. ("flag history: %d %s, oldest first (keeps the last %d)"):format(
+    #log, #log == 1 and "flag" or "flags", LOG_MAX))
+  for i = #log, 1, -1 do frame:AddMessage("   " .. LogLine(log[i])) end
+end
 
 local function PrintHelp()
   Print("commands:")
@@ -454,8 +501,8 @@ SlashCmdList.ANTIGRIEF = function(input)
       OnOff(ns.db.sound), OnOff(ns.db.screen), OnOff(ns.db.announce), OnOff(ns.db.dropReport),
       OnOff(ns.db.usePawn), pawn and "" or " (not loaded)", tostring(ns.db.upgradeMargin)))
     local _, ownTab = OutputFrame()
-    Line(ownTab and "output: AntiGrief chat tab"
-      or "output: main chat (make a chat tab named AntiGrief to keep these messages separate)")
+    Line(ownTab and "output: AntiGrief / AG Logs chat tab"
+      or "output: main chat (/ag history opens an AG Logs tab that keeps these messages separate)")
 
   elseif cmd == "config" or cmd == "options" then
     if not ConfigCall("Open") then PrintHelp() end
@@ -515,16 +562,17 @@ SlashCmdList.ANTIGRIEF = function(input)
     local log = ns.db.log
     if #log == 0 then Print("no flags logged"); return end
     Print("recent flags:")
-    for i = 1, math.min(#log, 15) do
-      local e = log[i]
-      local when = (type(e.t) == "number" and date) and date("%m/%d %H:%M", e.t) or "?"
-      Line(("%s  %s  %s  [%s] %s"):format(when, tostring(e.who), tostring(e.item),
-        D.SEV_NAME[e.sev] or "?", e.why or ""))
-    end
+    for i = 1, math.min(#log, 15) do Line(LogLine(log[i])) end
+
+  elseif cmd == "history" then
+    ShowHistory()
 
   elseif cmd == "clear" then
+    local n = #ns.db.log
     wipe(ns.db.log)
-    Print("log cleared")
+    local tab = FindChatWindow(LOG_TAB)
+    if tab and tab.Clear then pcall(tab.Clear, tab) end
+    Print(("log history cleared (%d %s removed)"):format(n, n == 1 and "entry" or "entries"))
 
   else
     PrintHelp()

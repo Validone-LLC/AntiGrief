@@ -104,6 +104,11 @@ end
 
 -- Frame names are globals; clear ours so each fresh stub starts without the button
 rawset(_G, "AntiGriefMinimapButton", nil)
+-- Chat windows are opt-in per test (see chatSystem in run.lua); start without them
+for i = 1, 10 do rawset(_G, "ChatFrame" .. i, nil) end
+for _, k in ipairs({ "GetChatWindowInfo", "NUM_CHAT_WINDOWS", "FCF_OpenNewWindow", "FCF_SelectDockFrame" }) do
+  rawset(_G, k, nil)
+end
 
 -- Minimap: 140 px wide, centred at (500, 400) in UI units, scale 1
 Minimap = {
