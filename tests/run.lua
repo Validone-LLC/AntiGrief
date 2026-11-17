@@ -1570,6 +1570,48 @@ test("/ag margin is clamped to 0-30, whole numbers; usage says so", function()
   eq(ns.db.upgradeMargin, 30, "saved value above the range clamped on load")
 end)
 
+-- Output tab: a chat window named AntiGrief receives everything ----------
+
+test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab falls back", function()
+  local cmd = SlashCmdList.ANTIGRIEF
+  party()
+  -- Real return order: name, fontSize, r, g, b, alpha, shown, locked, docked, uninteractable
+  local windows = {
+    { "General", 14, 0, 0, 0, 0.4, true, false, true, false },
+    { "Combat Log", 14, 0, 0, 0, 0.4, false, false, true, false },
+    { " antigrief ", 14, 0, 0, 0, 0.4, false, false, true, false }, -- docked, not the selected tab
+  }
+  local tab = {}
+  rawset(_G, "GetChatWindowInfo", function(i)
+    local w = windows[i]
+    if w then return unpack(w) end
+    return "", 14, 0, 0, 0, 0, false, false, false, false
+  end)
+  rawset(_G, "NUM_CHAT_WINDOWS", 10)
+  rawset(_G, "ChatFrame3", { AddMessage = function(_, msg) tab[#tab + 1] = msg end })
+
+  local mainBefore = #S.chat
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#S.chat, mainBefore, "nothing in main chat")
+  ok(#tab >= 2, "alert headline and finding lines in the tab")
+  ok(tab[1]:find("rolled NEED", 1, true), "headline in tab")
+  eq(#S.banners, 1, "banner still shown")
+  cmd("status")
+  eq(tab[#tab], "   output: AntiGrief chat tab", "status names the tab")
+
+  -- Closed window keeps its name but is neither shown nor docked
+  windows[3][7], windows[3][9] = false, false
+  cmd("status")
+  ok(S.chat[#S.chat]:find("output: main chat", 1, true), "closed tab -> main chat")
+
+  -- A GetChatWindowInfo error never breaks output
+  rawset(_G, "GetChatWindowInfo", function() error("boom") end)
+  cmd("log")
+  ok(S.chat[#S.chat] ~= nil and #S.chat > mainBefore, "falls back on error")
+  rawset(_G, "GetChatWindowInfo", nil)
+  rawset(_G, "ChatFrame3", nil)
+end)
+
 ---------------------------------------------------------------------------
 -- Run
 ---------------------------------------------------------------------------

@@ -20,8 +20,29 @@ local ROLL_MEMORY     = 900  -- seconds a reported rollID is remembered (rolls l
 local MARGIN_MIN, MARGIN_MAX = 0, 30 -- upgradeMargin range; matches the options slider
 
 local PREFIX = "|cff40c0ffAntiGrief|r: "
-local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
-local function Line(msg) DEFAULT_CHAT_FRAME:AddMessage("   " .. msg) end
+local OUTPUT_TAB = "antigrief" -- chat window name (case-insensitive) that receives our output
+
+-- The player's "AntiGrief" chat tab if one exists, else the main chat.
+-- Looked up on every message so a tab made or closed mid-session is picked up.
+-- A closed window keeps its name but is neither shown nor docked, so skip it.
+local function OutputFrame()
+  if GetChatWindowInfo then
+    local max = (Constants and Constants.ChatFrameConstants and Constants.ChatFrameConstants.MaxChatWindows)
+      or NUM_CHAT_WINDOWS or 10
+    for i = 1, max do
+      local ok, name, _, _, _, _, _, shown, _, docked = pcall(GetChatWindowInfo, i)
+      if ok and type(name) == "string" and (shown or docked)
+        and name:match("^%s*(.-)%s*$"):lower() == OUTPUT_TAB then
+        local frame = _G["ChatFrame" .. i]
+        if frame and frame.AddMessage then return frame, true end
+      end
+    end
+  end
+  return DEFAULT_CHAT_FRAME, false
+end
+
+local function Print(msg) (OutputFrame()):AddMessage(PREFIX .. msg) end
+local function Line(msg) (OutputFrame()):AddMessage("   " .. msg) end
 
 local function Short(name)
   if type(name) ~= "string" then return "?" end
@@ -396,6 +417,7 @@ local HELP = {
   "/ag drops - toggle the fit report on new drops (alias: hints)",
   "/ag sound | screen | announce | pawn - toggle",
   "/ag log | clear - show or clear recent flags",
+  "Tip: a chat tab named AntiGrief receives all AntiGrief messages",
 }
 
 local function PrintHelp()
@@ -424,6 +446,9 @@ SlashCmdList.ANTIGRIEF = function(input)
     Line(("sound %s, banner %s, announce %s, drop report %s, Pawn %s%s, margin %s"):format(
       OnOff(ns.db.sound), OnOff(ns.db.screen), OnOff(ns.db.announce), OnOff(ns.db.dropReport),
       OnOff(ns.db.usePawn), pawn and "" or " (not loaded)", tostring(ns.db.upgradeMargin)))
+    local _, ownTab = OutputFrame()
+    Line(ownTab and "output: AntiGrief chat tab"
+      or "output: main chat (make a chat tab named AntiGrief to keep these messages separate)")
 
   elseif cmd == "config" or cmd == "options" then
     if not ConfigCall("Open") then PrintHelp() end

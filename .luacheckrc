@@ -28,7 +28,7 @@ read_globals = {
   "InCombatLockdown", "Ambiguate",
   "GetSpecialization", "GetSpecializationInfo", "GetSpecializationInfoByID", "GetInspectSpecialization",
   -- UI, chat, sound
-  "CreateFrame", "DEFAULT_CHAT_FRAME", "RaidNotice_AddMessage", "RaidWarningFrame", "ChatTypeInfo",
+  "CreateFrame", "DEFAULT_CHAT_FRAME", "GetChatWindowInfo", "NUM_CHAT_WINDOWS", "Constants","RaidNotice_AddMessage", "RaidWarningFrame", "ChatTypeInfo",
   "PlaySound", "SOUNDKIT", "SendChatMessage", "LE_PARTY_CATEGORY_INSTANCE",
   -- misc
   "GetTime", "GetLocale", "issecretvalue", "wipe", "date", "time", "geterrorhandler",
