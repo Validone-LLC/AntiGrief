@@ -137,8 +137,7 @@ D.WEAPON = {
   -- Forever: 2H axes/maces are baseline (no longer an Enhancement talent).
   SHAMAN  = { [AXE1]=true, [AXE2]=true, [MACE1]=true, [MACE2]=true, [STAFF]=true,
               [DAGGER]=true, [FIST]=true },
-  -- Forever: polearms (level 20) per several guides and client skill data
-  -- reports; no Blizzard statement found. Allowed to avoid false alarms.
+  -- Forever: polearms (level 20); confirmed in game at a weapon master (2026-11-16).
   DRUID   = { [MACE1]=true, [MACE2]=true, [STAFF]=true, [DAGGER]=true, [FIST]=true,
               [POLEARM]=true },
   PRIEST  = { [DAGGER]=true, [MACE1]=true, [STAFF]=true, [WAND]=true },

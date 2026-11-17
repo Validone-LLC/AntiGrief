@@ -105,7 +105,7 @@ Checked 2026-11-16 for `D.WEAPON` in Data.lua. The table lists every weapon type
 | Hunter | 1H/2H axe, 1H/2H sword, polearm (20), staff, dagger, fist, bow, gun, crossbow, thrown | none. Still no maces | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
 | Rogue | dagger, fist, 1H mace, 1H sword, **1H axe**, bow, gun, crossbow, thrown | **+1H axe**. 2H axes still not available | verified (Blizzard deep dive) | MAXROLL, METAMMO, SENSEOS, LFCARRY |
 | Shaman | 1H/2H axe, 1H/2H mace, staff, dagger, fist | none (2H was already listed; it is now baseline instead of a talent). No polearms, swords | verified | MAXROLL, LFCARRY |
-| Druid | 1H/2H mace, staff, dagger, fist, **polearm (20)** | **+polearm** | **unconfirmed**: guides and client-data reports only, no Blizzard statement. LFCARRY doesn't list it. Allowed so it never causes a false alarm | SENSEOS, METAMMO, GUIDES |
+| Druid | 1H/2H mace, staff, dagger, fist, **polearm (20)** | **+polearm** | **verified in game** (user confirmed Polearms is in the druid list, 2026-11-16). Guides agreed; LFCARRY omits it | SENSEOS, METAMMO, GUIDES |
 | Priest | dagger, 1H mace, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
 | Mage | dagger, 1H sword, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
 | Warlock | dagger, 1H sword, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
@@ -169,4 +169,4 @@ Checked 2026-11-12 against [BUI] `forever` branch. `SS/` = `Interface/AddOns/Bli
 15. With the panel open on AntiGrief, type `/ag sound` (and `/ag sev 3`, `/ag margin 12`): the control updates without closing the panel. Then change each control in the panel and check `/ag status` matches, and that `/reload` keeps it.
 17. Output tab: right-click a chat tab > Create Window, name it `AntiGrief`. `/ag status` ends with "output: AntiGrief chat tab"; `/ag test`, drop reports and alerts appear only there (banner still shows). Close the window: `/ag status` says "output: main chat".
 16. The panel's "Defaults" button resets AntiGrief's controls to the table defaults (announce off, margin 8, Medium).
-18. Weapon proficiencies: on a druid of level 20 or higher, visit Woo Ping (Stormwind) or a Horde weapon master and check whether Polearms is offered. If not, remove `[POLEARM]` from `D.WEAPON.DRUID`. On a rogue, check that One-Handed Axes is offered (Buliwyf Stonehand, Sayoc or Hanashi). Optionally check that a paladin is offered no Daggers or Fist Weapons and a hunter no Maces.
+18. Weapon proficiencies: druid Polearms **confirmed in game** (2026-11-16). On a rogue, check that One-Handed Axes is offered (Buliwyf Stonehand, Sayoc or Hanashi). Optionally check that a paladin is offered no Daggers or Fist Weapons and a hunter no Maces.
