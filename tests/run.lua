@@ -290,6 +290,29 @@ test("priest can't use two-handed swords", function()
   expectFinding(f, 3, "Priest can't use Two-Handed Swords")
 end)
 
+test("Forever weapons: rogue 1H axe and druid polearm allowed; rogue 2H axe and paladin dagger flagged", function()
+  local function weapon(id, name, subclassID, subType, equipLoc)
+    return S.AddItem { id = id, name = name, classID = WEAPON, subclassID = subclassID, itemType = "Weapon",
+      subType = subType, equipLoc = equipLoc, ilvl = 60, minLevel = 55, stats = { ITEM_MOD_STAMINA_SHORT = 10 } }
+  end
+  local axe1 = weapon(1101, "Test Hatchet", 0, "One-Handed Axes", "INVTYPE_WEAPON")
+  local axe2 = weapon(1102, "Test Greataxe", 1, "Two-Handed Axes", "INVTYPE_2HWEAPON")
+  local polearm = weapon(1103, "Test Halberd", 6, "Polearms", "INVTYPE_2HWEAPON")
+  local dagger = weapon(1104, "Test Shiv", DAGGER, "Daggers", "INVTYPE_WEAPON")
+  local rogue = { name = "Rog", class = "ROGUE", level = 60 }
+  local druid = { name = "Dru", class = "DRUID", level = 60 }
+  local paladin = { name = "Pal", class = "PALADIN", level = 60 }
+
+  local f = evaluate(axe1, rogue)
+  expectNoFinding(f, 3, "can't use")
+  f = evaluate(polearm, druid)
+  expectNoFinding(f, 3, "can't use")
+  f = evaluate(axe2, rogue)
+  expectFinding(f, 3, "Rogue can't use Two-Handed Axes")
+  f = evaluate(dagger, paladin)
+  expectFinding(f, 3, "Paladin can't use Daggers")
+end)
+
 test("hybrid spec: Holy paladin flags Strength plate, Retribution and unknown don't", function()
   local link = I.plateChest
   local _, holy = evaluate(link, { name = "Pal", class = "PALADIN", level = 60, spec = 65 })

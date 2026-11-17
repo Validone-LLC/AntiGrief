@@ -85,6 +85,33 @@ Status: **verified** = exists with the signature used. **changed** = exists, but
 | `Enum.ItemArmorSubclass` | Data | verified | Cloth 1, Leather 2, Mail 3, Plate 4, Shield 6, Libram 7, Idol 8, Totem 9 | ItemConstantsDocumentation.lua:227 | Same as spec numbers |
 | `Enum.ItemWeaponSubclass` | Data | verified | Axe1H 0, Axe2H 1, Bows 2, Guns 3, Mace1H 4, Mace2H 5, Polearm 6, Sword1H 7, Sword2H 8, Staff 10, Unarmed 13, Generic 14, Dagger 15, Thrown 16, Crossbow 18, Wand 19, Fishingpole 20 | ItemConstantsDocumentation.lua:618 | Same as spec numbers |
 
+## Weapon proficiencies (Forever)
+
+Checked 2026-11-16 for `D.WEAPON` in Data.lua. The table lists every weapon type a class can **ever** use, including skills bought later from weapon masters, because other players' trained skills can't be seen. No new classes on Forever; the new race/class combinations (e.g. Undead Paladin, Dwarf Shaman) don't change class weapon access. Racial weapon specializations were removed, which doesn't affect what a class can equip.
+
+**Not in the UI source.** Weapon skills come from client DB2 data (`SkillLine`, `SkillRaceClassInfo`), not from FrameXML. The [BUI] `forever` branch has nothing that lists class weapon proficiencies. wago.tools (the DB2 viewer that would show `SkillRaceClassInfo` for build 1.60.1.70707) returned HTTP 403 to offline fetches, so the client data could only be checked through guides that quote it.
+
+**Sources:**
+- [MAXROLL] Maxroll summary of Blizzard's class deep dives: https://maxroll.gg/wow-forever/news/wow-forever-class-deep-dives-whats-changing-for-all-nine-classes ("Rogues can now learn to equip one-handed axes"; Shaman "Two-Handed Axes and Maces ... are all now baseline abilities")
+- [METAMMO] https://metammo.com/wow-forever/weapon-skills (per-class list from wago.tools SkillRaceClassInfo, client 1.60.1.70707 vs Classic Era 1.15.9.70003)
+- [SENSEOS] https://senseos.gg/guides/wow-forever/weapon-skills/ (per-class list with level gates; cites Blizzard deep dives and beta notes)
+- [LFCARRY] https://lfcarry.com/guides/wow-forever-weapon-trainers (trainer-by-trainer list; Polearms level 20, 1g; other skills 10s)
+- [GUIDES] Druid polearm claims: Forever druid guides from search results (warcrafttavern.com/forever/guides/druid/, mobalytics druid leveling guide). Could not fetch warcrafttavern (HTTP 403)
+
+| Class | Weapon types (D.WEAPON) | Change vs 1.12 table | Status | Source |
+|---|---|---|---|---|
+| Warrior | 1H/2H axe, 1H/2H mace, 1H/2H sword, polearm (20), staff, dagger, fist, bow, gun, crossbow, thrown | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
+| Paladin | 1H/2H axe, 1H/2H mace, 1H/2H sword, polearm (20) | none. No daggers or fist weapons: every source excludes them | verified (guides agree) | METAMMO, SENSEOS, LFCARRY ("no Daggers") |
+| Hunter | 1H/2H axe, 1H/2H sword, polearm (20), staff, dagger, fist, bow, gun, crossbow, thrown | none. Still no maces | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
+| Rogue | dagger, fist, 1H mace, 1H sword, **1H axe**, bow, gun, crossbow, thrown | **+1H axe**. 2H axes still not available | verified (Blizzard deep dive) | MAXROLL, METAMMO, SENSEOS, LFCARRY |
+| Shaman | 1H/2H axe, 1H/2H mace, staff, dagger, fist | none (2H was already listed; it is now baseline instead of a talent). No polearms, swords | verified | MAXROLL, LFCARRY |
+| Druid | 1H/2H mace, staff, dagger, fist, **polearm (20)** | **+polearm** | **unconfirmed**: guides and client-data reports only, no Blizzard statement. LFCARRY doesn't list it. Allowed so it never causes a false alarm | SENSEOS, METAMMO, GUIDES |
+| Priest | dagger, 1H mace, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
+| Mage | dagger, 1H sword, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
+| Warlock | dagger, 1H sword, staff, wand | none | verified (guides agree) | METAMMO, SENSEOS, LFCARRY |
+
+**Level gates:** Polearms can be trained from level 20 (all four classes that get them). No other weapon skill is level-gated. `D.WEAPON` doesn't gate polearms by level: below 20 the item's own required level usually decides, and a missed gate only means a missed flag, not a false one.
+
 ## Pawn (2.14.1, installed copy; closes the spec's "Open items to verify")
 
 | API | Used in | Status | Signature & returns | Source (Pawn folder) | Notes |
@@ -142,3 +169,4 @@ Checked 2026-11-12 against [BUI] `forever` branch. `SS/` = `Interface/AddOns/Bli
 15. With the panel open on AntiGrief, type `/ag sound` (and `/ag sev 3`, `/ag margin 12`): the control updates without closing the panel. Then change each control in the panel and check `/ag status` matches, and that `/reload` keeps it.
 17. Output tab: right-click a chat tab > Create Window, name it `AntiGrief`. `/ag status` ends with "output: AntiGrief chat tab"; `/ag test`, drop reports and alerts appear only there (banner still shows). Close the window: `/ag status` says "output: main chat".
 16. The panel's "Defaults" button resets AntiGrief's controls to the table defaults (announce off, margin 8, Medium).
+18. Weapon proficiencies: on a druid of level 20 or higher, visit Woo Ping (Stormwind) or a Horde weapon master and check whether Polearms is offered. If not, remove `[POLEARM]` from `D.WEAPON.DRUID`. On a rogue, check that One-Handed Axes is offered (Buliwyf Stonehand, Sayoc or Hanashi). Optionally check that a paladin is offered no Daggers or Fist Weapons and a hunter no Maces.

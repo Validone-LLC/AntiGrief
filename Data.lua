@@ -117,6 +117,11 @@ local CROSSBOW, WAND = WS.Crossbow or 18, WS.Wand or 19
 
 D.WEAPON_IGNORED = { [WS.Generic or 14] = true, [WS.Fishingpole or 20] = true } -- generic/misc, fishing poles
 
+-- Every weapon type a class can EVER use on Forever 1.60.1, including skills
+-- bought later from weapon masters (other players' trained skills can't be
+-- seen, so anything learnable counts as usable). Polearms train at level 20
+-- (1g); everything else from level 1. Not level-gated here on purpose.
+-- Sources and status: docs/api-verification.md, "Weapon proficiencies (Forever)".
 D.WEAPON = {
   WARRIOR = { [AXE1]=true, [AXE2]=true, [MACE1]=true, [MACE2]=true, [SWORD1]=true, [SWORD2]=true,
               [POLEARM]=true, [STAFF]=true, [DAGGER]=true, [FIST]=true,
@@ -125,11 +130,17 @@ D.WEAPON = {
               [POLEARM]=true },
   HUNTER  = { [AXE1]=true, [AXE2]=true, [SWORD1]=true, [SWORD2]=true, [POLEARM]=true, [STAFF]=true,
               [DAGGER]=true, [FIST]=true, [BOW]=true, [GUN]=true, [CROSSBOW]=true, [THROWN]=true },
-  ROGUE   = { [DAGGER]=true, [FIST]=true, [MACE1]=true, [SWORD1]=true,
+  -- Forever: rogues can learn one-handed axes (Blizzard class deep dive).
+  -- Two-handed axes are still not available.
+  ROGUE   = { [DAGGER]=true, [FIST]=true, [MACE1]=true, [SWORD1]=true, [AXE1]=true,
               [BOW]=true, [GUN]=true, [CROSSBOW]=true, [THROWN]=true },
+  -- Forever: 2H axes/maces are baseline (no longer an Enhancement talent).
   SHAMAN  = { [AXE1]=true, [AXE2]=true, [MACE1]=true, [MACE2]=true, [STAFF]=true,
               [DAGGER]=true, [FIST]=true },
-  DRUID   = { [MACE1]=true, [MACE2]=true, [STAFF]=true, [DAGGER]=true, [FIST]=true },
+  -- Forever: polearms (level 20) per several guides and client skill data
+  -- reports; no Blizzard statement found. Allowed to avoid false alarms.
+  DRUID   = { [MACE1]=true, [MACE2]=true, [STAFF]=true, [DAGGER]=true, [FIST]=true,
+              [POLEARM]=true },
   PRIEST  = { [DAGGER]=true, [MACE1]=true, [STAFF]=true, [WAND]=true },
   MAGE    = { [DAGGER]=true, [SWORD1]=true, [STAFF]=true, [WAND]=true },
   WARLOCK = { [DAGGER]=true, [SWORD1]=true, [STAFF]=true, [WAND]=true },
