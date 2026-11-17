@@ -1636,6 +1636,98 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   rawset(_G, "ChatFrame3", nil)
 end)
 
+-- Wins: "X won: [item]" after a Need that doesn't fit -------------------
+
+local function WON(name, link) return LOOT_ROLL_WON:format(ROLL_ID, name, link) end
+local function WON_NEED(name, n, link) return LOOT_ROLL_WON_NO_SPAM_NEED:format(ROLL_ID, name, n, link) end
+local function WON_OFFSPEC(name, n, link) return LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC:format(ROLL_ID, name, n, link) end
+local function WON_GREED(name, n, link) return LOOT_ROLL_WON_NO_SPAM_GREED:format(ROLL_ID, name, n, link) end
+local function wins() local n = 0; for _, e in ipairs(ns.db.log) do if e.kind == "won" then n = n + 1 end end; return n end
+
+test("ParseWin: default and no-spam Need lines; Greed and own wins don't parse", function()
+  local P = ns._test
+  local name, link, saysNeed = P.ParseWin(WON("Bob", I.spellDagger))
+  eq(name, "Bob"); eq(link, I.spellDagger); eq(saysNeed, false, "default line has no roll type")
+  name, link, saysNeed = P.ParseWin(WON_NEED("Bob", 87, I.spellDagger))
+  eq(name, "Bob", "no-spam name"); eq(link, I.spellDagger); eq(saysNeed, true, "says Need")
+  name, _, saysNeed = P.ParseWin(WON_OFFSPEC("Bob", 12, I.spellDagger))
+  eq(name, "Bob", "off-spec name"); eq(saysNeed, true, "off-spec Need counts")
+  eq(P.ParseWin(WON_GREED("Bob", 50, I.spellDagger)), nil, "Greed win not parsed")
+  eq(P.ParseWin(LOOT_ROLL_YOU_WON:format(ROLL_ID, I.spellDagger)), nil, "own win not parsed")
+  eq(P.ParseWin(LOOT_ROLL_ALL_PASSED:format(ROLL_ID, I.spellDagger)), nil, "all passed not parsed")
+  eq(P.ParseWin(NEED("Bob", I.spellDagger)), nil, "a Need line isn't a win")
+  eq(#P.winPatterns, 3, "three win patterns")
+end)
+
+test("wins: Need then won on a misfit -> chat line and a 'won' log entry", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#ns.db.log, 1, "the Need flag")
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  eq(wins(), 1, "win logged")
+  local e = ns.db.log[1]
+  eq(e.kind, "won"); eq(e.who, "Bob"); eq(e.item, I.spellDagger); eq(e.sev, 3)
+  ok(e.why:find("don't suit a Warrior", 1, true), "reason kept: " .. tostring(e.why))
+  eq(S.chatCount("Bob|r won " .. I.spellDagger .. " with Need - doesn't look like a fit"), 1, "chat line")
+  eq(#S.banners, 1, "no second banner for the win"); eq(S.sounds, 1, "no second sound")
+  -- history shows it as a win
+  SlashCmdList.ANTIGRIEF("log")
+  eq(S.chatCount("Bob won " .. I.spellDagger .. "  [High]"), 1, "log line reads 'Bob won [item]'")
+end)
+
+test("wins: Need-only - a default won line without a seen Need is ignored", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  eq(wins(), 0, "Greed win (no Need seen) not logged")
+  eq(#ns.db.log, 0, "nothing logged")
+end)
+
+test("wins: no-spam Need lines count on their own; no-spam Greed doesn't", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", WON_NEED("Bob", 87, I.spellDagger))
+  eq(wins(), 1, "Main-Spec Need win")
+  S.fire("CHAT_MSG_LOOT", WON_OFFSPEC("Bob", 12, I.robe58))
+  eq(wins(), 2, "Off-Spec Need win")
+  S.fire("CHAT_MSG_LOOT", WON_GREED("Bob", 50, I.staminaSpellGloves))
+  eq(wins(), 2, "Greed win ignored")
+end)
+
+test("wins: a fitting item, a Need forgotten after 15 min, and own wins aren't logged", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.plateChest)) -- plate suits a warrior
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.plateChest))
+  eq(wins(), 0, "fits -> no win entry")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  S.advance(901)
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  eq(wins(), 0, "Need older than 15 minutes doesn't count")
+  S.fire("CHAT_MSG_LOOT", NEED("Me", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", WON("Me", I.spellDagger))
+  eq(wins(), 0, "own win ignored")
+end)
+
+test("wins: one Need is used once; another player's Need doesn't count for Bob", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Me", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  eq(wins(), 0, "someone else's Need")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger)) -- a second copy won on Greed
+  eq(wins(), 1, "the Need is consumed by the first win")
+end)
+
+test("wins: below the alert threshold or disabled -> not logged", function()
+  party()
+  ns.db.minSeverity = 3
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest)) -- Low only for a warrior
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.leatherChest))
+  eq(wins(), 0, "Low win below High threshold")
+  ns.db.enabled = false
+  S.fire("CHAT_MSG_LOOT", WON_NEED("Bob", 90, I.spellDagger))
+  eq(wins(), 0, "disabled")
+end)
+
 -- Chat windows: a fake chat-window system for the AG Logs tab tests -----
 
 -- General and Combat Log, plus `extra` windows { name, shown, docked }.

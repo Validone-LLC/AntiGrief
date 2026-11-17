@@ -95,6 +95,15 @@ end
 -- Need-roll parsing (patterns built from the client's localized strings)
 ---------------------------------------------------------------------------
 local NEED_PATTERNS = {}
+-- Roll-won lines: { pat = pattern, need = true (the line says Need) | false (no roll type) }.
+-- Greed/Disenchant/Transmog wins aren't parsed: they're never judged.
+local WIN_PATTERNS = {}
+local YOU_WON_PATTERN -- "You won: %s": the player's own win, which the "%s won:" pattern would also match
+local WIN_KEYS = {
+  { "LOOT_ROLL_WON", false },                       -- "%s won: %s" (default, showLootSpam 1)
+  { "LOOT_ROLL_WON_NO_SPAM_NEED", true },           -- "%s (Need - %d, Main-Spec) Won: %s"
+  { "LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC", true },  -- "%s (Need - %d, Off-Spec) Won: %s"
+}
 local LINK_TOKEN = "\001" -- stands in for the item link while matching
 
 local function Literal(s)
@@ -144,6 +153,14 @@ local function InitPatterns()
   -- line isn't swallowed by a shorter pattern that also matches it with
   -- " + Role Bonus" glued onto the name
   table.sort(NEED_PATTERNS, function(a, b) return #a > #b end)
+
+  for i = #WIN_PATTERNS, 1, -1 do WIN_PATTERNS[i] = nil end
+  for _, k in ipairs(WIN_KEYS) do
+    local p = BuildPattern(_G[ k[1] ])
+    if p then WIN_PATTERNS[#WIN_PATTERNS + 1] = { pat = p, need = k[2] } end
+  end
+  YOU_WON_PATTERN = BuildPattern(LOOT_ROLL_YOU_WON)
+  table.sort(WIN_PATTERNS, function(a, b) return #a.pat > #b.pat end)
 end
 
 -- First item hyperlink in s, including a colour prefix (|cffxxxxxx or
@@ -168,12 +185,13 @@ end
 -- Identify the pieces by content, so locales that reorder arguments still
 -- work. The item link is masked out first, so text inside the item's name
 -- (" by ", " for ", the separator itself) can't shift the split.
-local function ParseNeed(msg)
+-- Returns name, link, and the index of the pattern that matched.
+local function MatchNameAndLink(msg, patterns, patOf)
   local link, ls, le = ExtractItemLink(msg)
   if not link then return nil end
   local masked = msg:sub(1, ls - 1) .. LINK_TOKEN .. msg:sub(le + 1)
-  for _, pat in ipairs(NEED_PATTERNS) do
-    local caps = { masked:match(pat) }
+  for i, entry in ipairs(patterns) do
+    local caps = { masked:match(patOf and patOf(entry) or entry) }
     if #caps > 0 then
       local hasLink, name = false, nil
       for _, c in ipairs(caps) do
@@ -182,10 +200,26 @@ local function ParseNeed(msg)
       end
       if hasLink and name then
         name = CleanName(name)
-        if name ~= "" then return name, link end
+        if name ~= "" then return name, link, i end
       end
     end
   end
+end
+
+local function ParseNeed(msg)
+  local name, link = MatchNameAndLink(msg, NEED_PATTERNS)
+  return name, link
+end
+
+-- "Bob won: [item]" -> "Bob", link, saysNeed (true when the line itself says Need)
+local function WinPat(e) return e.pat end
+local function ParseWin(msg)
+  if YOU_WON_PATTERN then
+    local link, ls, le = ExtractItemLink(msg)
+    if link and (msg:sub(1, ls - 1) .. LINK_TOKEN .. msg:sub(le + 1)):match(YOU_WON_PATTERN) then return nil end
+  end
+  local name, link, i = MatchNameAndLink(msg, WIN_PATTERNS, WinPat)
+  if name then return name, link, WIN_PATTERNS[i].need end
 end
 
 -- Full-name match wins over a short-name match anywhere in the group
@@ -275,12 +309,90 @@ local function Judge(name, link, attempt)
   end
 end
 
+---------------------------------------------------------------------------
+-- Wins: "Bob won: [item]" after Bob rolled Need on it, and it doesn't fit
+---------------------------------------------------------------------------
+-- itemString -> { [short lowercase name] = GetTime() of their Need }
+local needed = {}
+
+local function ItemKey(link) return link:match("|H(item:[^|]+)") or link end
+local function NameKey(name) return Short(name):lower() end
+
+local function RememberNeed(name, link)
+  local key = ItemKey(link)
+  needed[key] = needed[key] or {}
+  needed[key][NameKey(name)] = GetTime()
+end
+
+-- True (and forgets it) if `name` rolled Need on this item in the last ROLL_MEMORY s
+local function TakeNeed(name, link)
+  local key = ItemKey(link)
+  local byName = needed[key]
+  local t = byName and byName[NameKey(name)]
+  if not t then return false end
+  byName[NameKey(name)] = nil
+  if next(byName) == nil then needed[key] = nil end
+  return GetTime() - t <= ROLL_MEMORY
+end
+
+local function PruneNeeded(now)
+  for key, byName in pairs(needed) do
+    PruneOlder(byName, now, ROLL_MEMORY)
+    if next(byName) == nil then needed[key] = nil end
+  end
+end
+
+local function LogWin(who, link, findings, maxSev)
+  table.sort(findings, function(a, b) return a.sev > b.sev end)
+  Print(("|c%s%s|r won %s with Need - doesn't look like a fit"):format(D.SEV_COLOR[maxSev], Short(who.name), link))
+  for _, f in ipairs(findings) do
+    Line(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
+  end
+  if type(ns.db.log) ~= "table" then ns.db.log = {} end
+  local log = ns.db.log
+  table.insert(log, 1, { t = time(), kind = "won", who = who.name or "?", class = who.class, item = link,
+    sev = maxSev, why = findings[1].text })
+  while #log > LOG_MAX do table.remove(log) end
+end
+
+-- Judge a confirmed Need win; logs it when the item doesn't fit (same threshold as alerts)
+local function JudgeWin(name, link, attempt)
+  if not ns.db or not ns.db.enabled then return end
+  local unit = UnitByName(name)
+  if not unit or UnitIsUnit(unit, "player") then return end
+  attempt = attempt or 0
+  if not D.GetItemInfo(link) and attempt < LOAD_RETRIES then
+    C_Timer.After(1, function() JudgeWin(name, link, attempt + 1) end)
+    return
+  end
+  local who = Inspect.Who(unit)
+  if not who then return end
+  local findings, maxSev = Rules.Evaluate(link, who)
+  if findings and #findings > 0 and D.SEV_COLOR[maxSev] and maxSev >= (ns.db.minSeverity or 2) then
+    LogWin(who, link, findings, maxSev)
+  end
+end
+
+local function OnWin(name, link, saysNeed)
+  -- Need-only: the default "won:" line has no roll type, so it counts only if
+  -- we saw this player's Need on the item; the no-spam Need lines say it.
+  local rolledNeed = TakeNeed(name, link)
+  if saysNeed or rolledNeed then JudgeWin(name, link) end
+end
+
 local function OnLootMessage(msg)
   if not ns.db or not ns.db.enabled then return end
   if issecretvalue and issecretvalue(msg) then return end
   if type(msg) ~= "string" or not IsInGroup() then return end
   local ok, name, link = pcall(ParseNeed, msg)
-  if ok and name and link then Judge(name, link) end
+  if ok and name and link then
+    PruneNeeded(GetTime())
+    RememberNeed(name, link)
+    Judge(name, link)
+    return
+  end
+  local okWin, wname, wlink, saysNeed = pcall(ParseWin, msg)
+  if okWin and wname and wlink then OnWin(wname, wlink, saysNeed) end
 end
 
 ---------------------------------------------------------------------------
@@ -441,8 +553,9 @@ local HELP = {
 -- One flag-log entry as a chat line
 local function LogLine(e)
   local when = (type(e.t) == "number" and date) and date("%m/%d %H:%M", e.t) or "?"
-  return ("%s  %s  %s  [%s] %s"):format(when, tostring(e.who), tostring(e.item),
-    D.SEV_NAME[e.sev] or "?", e.why or "")
+  local what = (e.kind == "won") and ("%s won %s"):format(tostring(e.who), tostring(e.item))
+    or ("%s  %s"):format(tostring(e.who), tostring(e.item))
+  return ("%s  %s  [%s] %s"):format(when, what, D.SEV_NAME[e.sev] or "?", e.why or "")
 end
 
 -- Opens the "AG Logs" chat tab (creating it if needed) and fills it with the
@@ -657,4 +770,5 @@ ns._test = {
   BuildPattern = BuildPattern, ParseNeed = ParseNeed, InitPatterns = InitPatterns,
   ExtractItemLink = ExtractItemLink, CleanName = CleanName, UnitByName = UnitByName,
   patterns = NEED_PATTERNS, DROP_REPORT_MAX = DROP_REPORT_MAX,
+  ParseWin = ParseWin, winPatterns = WIN_PATTERNS,
 }

@@ -34,6 +34,7 @@ read_globals = {
   "GetTime", "GetLocale", "issecretvalue", "wipe", "date", "time", "geterrorhandler",
   -- global strings and constants
   "LOOT_ROLL_NEED", "LOOT_ROLL_ROLLED_NEED", "LOOT_ROLL_ROLLED_NEED_ROLE_BONUS",
+  "LOOT_ROLL_WON", "LOOT_ROLL_YOU_WON", "LOOT_ROLL_WON_NO_SPAM_NEED", "LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC",
   "ITEM_SPELL_TRIGGER_ONEQUIP", "ITEM_SPELL_TRIGGER_ONUSE", "ITEM_SPELL_TRIGGER_ONPROC",
   "LOCALIZED_CLASS_NAMES_MALE", "INVSLOT_RANGED",
   -- options panel (Config.lua): Settings API

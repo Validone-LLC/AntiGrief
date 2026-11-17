@@ -196,6 +196,13 @@ LOOT_ROLL_NEED = "|HlootHistory:%d|h[Loot]|h: %s has selected Need for: %s"
 LOOT_ROLL_NEED_SELF = "|HlootHistory:%d|h[Loot]|h: You have selected Need for: %s"
 LOOT_ROLL_ROLLED_NEED = "|HlootHistory:%d|h[Loot]|h: Need Roll - %d for %s by %s"
 LOOT_ROLL_ROLLED_NEED_ROLE_BONUS = "Need Roll - %d for %s by %s + Role Bonus"
+-- Roll-won lines, verbatim from [KBIR] 1.60.1 enUS GlobalStrings
+LOOT_ROLL_WON = "|HlootHistory:%d|h[Loot]|h: %s won: %s"
+LOOT_ROLL_YOU_WON = "|HlootHistory:%d|h[Loot]|h: You won: %s"
+LOOT_ROLL_WON_NO_SPAM_NEED = "|HlootHistory:%d|h[Loot]|h: %s (Need - %d, Main-Spec) Won: %s"
+LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC = "|HlootHistory:%d|h[Loot]|h: %s (Need - %d, Off-Spec) Won: %s"
+LOOT_ROLL_WON_NO_SPAM_GREED = "|HlootHistory:%d|h[Loot]|h: %s (Greed - %d) Won: %s"
+LOOT_ROLL_ALL_PASSED = "|HlootHistory:%d|h[Loot]|h: Everyone passed on: %s"
 -- The spec's older forms, kept for extra coverage (S.UseOldLootStrings)
 S.OLD_LOOT = {
   LOOT_ROLL_NEED = "%s has selected Need for: %s",
