@@ -6,6 +6,7 @@ local D, Inspect, Rules = ns.Data, ns.Inspect, ns.Rules
 local DEFAULTS = {
   enabled = true, minSeverity = 2, sound = true, screen = true,
   announce = false, dropReport = true, upgradeMargin = 8, usePawn = true, log = {},
+  minimapButton = true, minimapAngle = 225,
 }
 -- Keys from older versions, removed from the saved settings on load.
 -- `hints` (off by default) was replaced by `dropReport` (on by default).
@@ -49,21 +50,27 @@ local function Short(name)
   return (Ambiguate and Ambiguate(name, "short")) or name
 end
 
--- Calls ns.Config[method](...) if Config.lua provides it. An error in the
--- panel code is reported (WoW's error handler) but never stops the caller.
+-- Calls module[method](...) if that file provides it (Config.lua, Minimap.lua). An error in the
+-- module is reported (WoW's error handler) but never stops the caller.
 -- Returns true if the method exists.
-local function ConfigCall(method, ...)
-  local fn = ns.Config and ns.Config[method]
+local function ModuleCall(label, module, method, ...)
+  local fn = module and module[method]
   if type(fn) ~= "function" then return false end
   local args, n = { ... }, select("#", ...)
   local handler = (geterrorhandler and geterrorhandler())
-    or function(err) Print("options panel error: " .. tostring(err)) end
+    or function(err) Print(label .. " error: " .. tostring(err)) end
   xpcall(function() fn(unpack(args, 1, n)) end, handler)
   return true
 end
+local function ConfigCall(method, ...) return ModuleCall("options panel", ns.Config, method, ...) end
+-- Same for the minimap button (Minimap.lua)
+local function ButtonCall(method, ...) return ModuleCall("minimap button", ns.MinimapButton, method, ...) end
 
 -- Tell the options panel (if any) that a setting changed outside it
-local function Changed(key) ConfigCall("Refresh", key) end
+local function Changed(key)
+  ConfigCall("Refresh", key)
+  if key == "minimapButton" then ButtonCall("Refresh") end
+end
 
 -- Remove entries of a name/guid -> timestamp table older than `age`
 local function PruneOlder(t, now, age)
@@ -415,7 +422,7 @@ local HELP = {
   "/ag sev 1-3 - alert threshold (1 Low, 2 Medium, 3 High)",
   "/ag margin 0-30 - item-level gap for the upgrade check",
   "/ag drops - toggle the fit report on new drops (alias: hints)",
-  "/ag sound | screen | announce | pawn - toggle",
+  "/ag sound | screen | announce | pawn | minimap - toggle",
   "/ag log | clear - show or clear recent flags",
   "Tip: a chat tab named AntiGrief receives all AntiGrief messages",
 }
@@ -502,6 +509,7 @@ SlashCmdList.ANTIGRIEF = function(input)
   elseif cmd == "announce" then Toggle("announce", "Group announce")
   elseif cmd == "drops" or cmd == "hints" then Toggle("dropReport", "Drop report")
   elseif cmd == "pawn" then Toggle("usePawn", "Pawn scoring")
+  elseif cmd == "minimap" then Toggle("minimapButton", "Minimap button")
 
   elseif cmd == "log" then
     local log = ns.db.log
@@ -540,6 +548,10 @@ local function LoadSettings()
   elseif db.upgradeMargin > MARGIN_MAX then
     db.upgradeMargin = MARGIN_MAX            -- e.g. set by /ag margin before the cap
   end
+  if db.minimapAngle ~= db.minimapAngle or db.minimapAngle == math.huge or db.minimapAngle == -math.huge then
+    db.minimapAngle = DEFAULTS.minimapAngle -- NaN or infinite
+  end
+  db.minimapAngle = db.minimapAngle % 360
   -- ns.db is this same table from here on (edited in place, never replaced):
   -- the options panel binds its settings to it in Config.Init
   ns.db = db
@@ -556,6 +568,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
     if name ~= ADDON then return end
     LoadSettings()
     ConfigCall("Init") -- options panel (Config.lua), once the settings exist
+    ButtonCall("Init") -- minimap button (Minimap.lua)
     InitPatterns()
     for _, e in ipairs({ "GROUP_ROSTER_UPDATE", "PLAYER_ENTERING_WORLD", "INSPECT_READY",
                          "UNIT_INVENTORY_CHANGED", "START_LOOT_ROLL", "CHAT_MSG_LOOT" }) do
@@ -567,6 +580,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
     self:UnregisterEvent("ADDON_LOADED")
 
   elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
+    -- no-op once made; covers a minimap that didn't exist yet at ADDON_LOADED
+    if event == "PLAYER_ENTERING_WORLD" then ButtonCall("Init") end
     Inspect.Prune()
     PruneOlder(lastRescan, GetTime(), RESCAN_GAP)
     if ns.db.enabled then Inspect.QueueGroup(false) end

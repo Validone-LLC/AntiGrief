@@ -12,4 +12,5 @@ Inspect.lua
 Rules.lua
 Pawn.lua
 Config.lua
+Minimap.lua
 AntiGrief.lua

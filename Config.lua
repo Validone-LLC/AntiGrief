@@ -64,6 +64,11 @@ local CONTROLS = {
     tooltip = "How many item levels below someone's current gear a drop can be before their Need is flagged as not an upgrade." },
   { key = "usePawn", kind = CHECKBOX, default = true, label = "Use Pawn scoring",
     tooltip = "If the Pawn addon is installed, use its scores instead of item level to judge upgrades." },
+  { key = "minimapButton", kind = CHECKBOX, default = true, label = "Show minimap button",
+    tooltip = "Show the AG button on the minimap. Click it for the log or these settings; drag it to move it.",
+    onChange = function()
+      if ns.MinimapButton and ns.MinimapButton.Refresh then ns.MinimapButton.Refresh() end
+    end },
 }
 
 local function BuildControl(cat, c, db)
@@ -75,6 +80,9 @@ local function BuildControl(cat, c, db)
 
   if c.kind == CHECKBOX then
     S.CreateCheckbox(cat, setting, c.tooltip)
+    if c.onChange and setting.SetValueChangedCallback then
+      setting:SetValueChangedCallback(function() c.onChange() end)
+    end
   elseif c.kind == DROPDOWN then
     local choices = c.choices
     local function GetOptions()

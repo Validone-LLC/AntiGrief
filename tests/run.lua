@@ -12,7 +12,7 @@ local function path(p) return root .. "/" .. p end
 
 local ADDON = "AntiGrief"
 -- Same order as AntiGrief.toc
-local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "Config.lua", "AntiGrief.lua" }
+local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "Config.lua", "Minimap.lua", "AntiGrief.lua" }
 -- Config.lua (the options panel) is written separately; while it isn't in
 -- the repo the suite runs without it.
 local OPTIONAL = { ["Config.lua"] = true }
@@ -1464,6 +1464,7 @@ if HAS_CONFIG then
     { "sound", "checkbox", "boolean" }, { "screen", "checkbox", "boolean" },
     { "announce", "checkbox", "boolean" }, { "dropReport", "checkbox", "boolean" },
     { "upgradeMargin", "slider", "number" }, { "usePawn", "checkbox", "boolean" },
+    { "minimapButton", "checkbox", "boolean" },
   }
 
   local function settingFor(key)
@@ -1472,11 +1473,11 @@ if HAS_CONFIG then
     end
   end
 
-  test("Config.lua: Init registers all eight controls bound to the right ns.db keys", function()
+  test("Config.lua: Init registers all nine controls bound to the right ns.db keys", function()
     eq(#S.cfg.categories, 1, "one category")
     eq(S.cfg.addOnCategories[1], S.cfg.categories[1], "registered as an addon category")
     eq(#S.cfg.addOnCategories, 1, "registered once")
-    eq(#S.cfg.controls, 8, "controls")
+    eq(#S.cfg.controls, 9, "controls")
     local vars = {}
     for i, want in ipairs(EXPECTED) do
       local c = S.cfg.controls[i]
@@ -1495,7 +1496,7 @@ if HAS_CONFIG then
     eq(#choices, 3, "severity choices"); eq(choices[1].value, 1, "Low"); eq(choices[3].value, 3, "High")
     eq(sev:GetDefaultValue(), 2, "severity default")
     local SPEC_DEFAULTS = { enabled = true, minSeverity = 2, sound = true, screen = true, announce = false,
-      dropReport = true, upgradeMargin = 8, usePawn = true }
+      dropReport = true, upgradeMargin = 8, usePawn = true, minimapButton = true }
     local n = 0
     for key, want in pairs(SPEC_DEFAULTS) do
       local st = settingFor(key)
@@ -1503,7 +1504,7 @@ if HAS_CONFIG then
       eq(st:GetDefaultValue(), want, key .. " GetDefaultValue")
       n = n + 1
     end
-    eq(n, 8, "all eight defaults checked")
+    eq(n, 9, "all nine defaults checked")
     local slider
     for _, c in ipairs(S.cfg.controls) do if c.kind == "slider" then slider = c end end
     eq(slider.options.minValue, 0, "slider min"); eq(slider.options.maxValue, 30, "slider max")
@@ -1555,7 +1556,7 @@ if HAS_CONFIG then
   test("Config.lua: Init runs only once, even when called twice", function()
     ns.Config.Init()
     ns.Config.Init()
-    eq(#S.cfg.controls, 8, "still 8 controls")
+    eq(#S.cfg.controls, 9, "still 9 controls")
     eq(#S.cfg.categories, 1, "one category")
     eq(#S.cfg.addOnCategories, 1, "RegisterAddOnCategory called once")
   end)
@@ -1633,6 +1634,152 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   ok(S.chat[#S.chat] ~= nil and #S.chat > mainBefore, "falls back on error")
   rawset(_G, "GetChatWindowInfo", nil)
   rawset(_G, "ChatFrame3", nil)
+end)
+
+-- Minimap button ----------------------------------------------------------
+
+local function mmButton() return rawget(_G, "AntiGriefMinimapButton") end
+local function near(a, b, what) ok(math.abs(a - b) < 0.01, ("%s: expected %s, got %s"):format(what, b, a)) end
+
+test("minimap: black disc with red AG on the minimap, shown at 225 degrees by default", function()
+  local b = mmButton()
+  ok(b, "button created")
+  eq(b.parent, Minimap, "parented to the minimap")
+  ok(b:IsShown(), "shown")
+  local text, disc
+  for _, r in ipairs(b.regions) do
+    if r.kind == "FontString" then text = r end
+    if r.texture == 136467 then disc = r end
+  end
+  eq(text.text, "AG", "label")
+  eq(text.textColor[1], 1, "red"); ok(text.textColor[2] < 0.3 and text.textColor[3] < 0.3, "red, not orange/pink")
+  eq(disc.vertexColor[1] + disc.vertexColor[2] + disc.vertexColor[3], 0, "disc tinted black")
+  eq(ns.db.minimapButton, true, "default on"); eq(ns.db.minimapAngle, 225, "default angle")
+  local p = b.point
+  eq(p[1], "CENTER"); eq(p[2], Minimap); eq(p[3], "CENTER")
+  local r = 140 / 2 + 5
+  near(p[4], math.cos(math.rad(225)) * r, "x"); near(p[5], math.sin(math.rad(225)) * r, "y")
+end)
+
+test("minimap: click opens a Log / Settings menu; each item does its job", function()
+  local b = mmButton()
+  b.scripts.OnClick(b, "LeftButton")
+  eq(#S.menus, 1, "menu opened")
+  local m = S.menus[1]
+  eq(m.owner, b, "anchored to the button")
+  eq(m.items[1].kind, "title"); eq(m.items[1].text, "AntiGrief")
+  eq(m.items[2].text, "Log"); eq(m.items[3].text, "Settings")
+  eq(#m.items, 3, "two choices")
+  m.items[2].fn()
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: no flags logged", "Log prints the flag log")
+  if HAS_CONFIG then
+    m.items[3].fn()
+    eq(#S.cfg.opened, 1, "Settings opens the options page")
+  end
+  b.scripts.OnClick(b, "RightButton")
+  eq(#S.menus, 2, "right-click opens the same menu")
+end)
+
+test("minimap: without the menu API, left-click opens settings and right-click the log", function()
+  local b = mmButton()
+  MenuUtil = nil
+  b.scripts.OnClick(b, "RightButton")
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: no flags logged", "right-click -> log")
+  if HAS_CONFIG then
+    b.scripts.OnClick(b, "LeftButton")
+    eq(#S.cfg.opened, 1, "left-click -> settings")
+  end
+  MenuUtil = { CreateContextMenu = function() error("menu broke") end }
+  b.scripts.OnClick(b, "RightButton")
+  eq(S.chatCount("no flags logged"), 2, "menu error -> same fallback")
+end)
+
+test("minimap: dragging moves it round the edge and saves the angle", function()
+  local b = mmButton()
+  b.scripts.OnDragStart(b)
+  ok(b.scripts.OnUpdate, "OnUpdate only while dragging")
+  S.cursor = { 600, 400 } -- due east of the minimap centre
+  b.scripts.OnUpdate(b)
+  near(ns.db.minimapAngle, 0, "east = 0")
+  near(b.point[4], 75, "x"); near(b.point[5], 0, "y")
+  S.cursor = { 500, 300 } -- due south
+  b.scripts.OnUpdate(b)
+  near(ns.db.minimapAngle, 270, "south = 270 (0-360, never negative)")
+  b.scripts.OnDragStop(b)
+  eq(b.scripts.OnUpdate, nil, "OnUpdate cleared on drop")
+end)
+
+test("minimap: square minimap pushes the button to the corner", function()
+  rawset(_G, "GetMinimapShape", function() return "SQUARE" end)
+  ns.db.minimapAngle = 45
+  ns.MinimapButton.Refresh()
+  local p = mmButton().point
+  local corner = (math.sqrt(2 * 75 * 75) - 10) * math.cos(math.rad(45)) -- LibDBIcon formula, ~67.9
+  near(p[4], corner, "x pushed toward the corner"); near(p[5], corner, "y pushed toward the corner")
+  ok(p[4] > 75 * math.cos(math.rad(45)) + 1, "further out than on a round minimap")
+  rawset(_G, "GetMinimapShape", nil)
+end)
+
+test("minimap: /ag minimap and the options checkbox hide and show it", function()
+  local b = mmButton()
+  SlashCmdList.ANTIGRIEF("minimap")
+  ok(not b:IsShown(), "hidden"); eq(ns.db.minimapButton, false, "saved")
+  SlashCmdList.ANTIGRIEF("minimap")
+  ok(b:IsShown(), "shown again")
+  eq(S.chatCount("/ag sound | screen | announce | pawn | minimap - toggle"), 0, "help not printed by toggling")
+  -- The slash path must work on its own, without the options page relaying it
+  local cfg = ns.Config
+  ns.Config = nil
+  SlashCmdList.ANTIGRIEF("minimap")
+  ok(not b:IsShown(), "hidden without the options page")
+  SlashCmdList.ANTIGRIEF("minimap")
+  ok(b:IsShown(), "shown without the options page")
+  ns.Config = cfg
+  if HAS_CONFIG then
+    local setting = S.cfg.settings.ANTIGRIEF_minimapButton
+    ok(setting, "options checkbox exists")
+    setting:SetValue(false)
+    ok(not b:IsShown(), "checkbox off hides it")
+    setting:SetValue(true)
+    ok(b:IsShown(), "checkbox on shows it")
+  end
+end)
+
+test("minimap: saved angle is normalised; hidden setting survives reload", function()
+  reloadWith({ minimapAngle = 400, minimapButton = false })
+  eq(ns.db.minimapAngle, 40, "400 -> 40")
+  ok(not mmButton():IsShown(), "stays hidden after reload")
+  reloadWith({ minimapAngle = 0 / 0 })
+  eq(ns.db.minimapAngle, 225, "NaN -> default")
+  reloadWith({ minimapAngle = -90 })
+  eq(ns.db.minimapAngle, 270, "-90 -> 270")
+  reloadWith({ minimapAngle = "x" })
+  eq(ns.db.minimapAngle, 225, "wrong type -> default")
+end)
+
+test("minimap: tooltip shows status and how to use it", function()
+  local b = mmButton()
+  b.scripts.OnEnter(b)
+  eq(GameTooltip.lines[1], "AntiGrief", "title")
+  local all = table.concat(GameTooltip.lines, "\n")
+  ok(all:find("alerts at Medium+", 1, true), "status line")
+  ok(all:find("Click: Log or Settings", 1, true), "usage line")
+  ok(GameTooltip.shown, "shown")
+  b.scripts.OnLeave(b)
+  ok(not GameTooltip.shown, "hidden on leave")
+end)
+
+test("minimap: no minimap frame (UI replacement) -> no button, no error, addon works", function()
+  S = assert(loadfile(path("tests/wowstub.lua")))()
+  Minimap = nil
+  loadAddon()
+  S.fire("ADDON_LOADED", ADDON)
+  S.fire("PLAYER_ENTERING_WORLD")
+  eq(rawget(_G, "AntiGriefMinimapButton"), nil, "no button")
+  eq(S.chatCount("minimap button error"), 0, "no error")
+  items(); party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("rolled NEED"), 1, "alerts still work")
 end)
 
 ---------------------------------------------------------------------------

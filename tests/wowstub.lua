@@ -67,15 +67,73 @@ end
 ---------------------------------------------------------------------------
 -- Frames and events
 ---------------------------------------------------------------------------
-function CreateFrame()
-  local f = { events = {}, scripts = {} }
+-- Widget methods the addon doesn't need modelled are accepted and ignored
+-- (layout, strata, textures); the ones tests inspect keep state.
+local noop = function() end
+local Region = { __index = function() return noop end }
+
+local function NewRegion(kind)
+  local r = setmetatable({ kind = kind }, Region)
+  function r:SetText(t) self.text = t end
+  function r:SetTextColor(...) self.textColor = { ... } end
+  function r:SetVertexColor(...) self.vertexColor = { ... } end
+  function r:SetTexture(t) self.texture = t end
+  return r
+end
+
+function CreateFrame(frameType, name, parent)
+  local f = setmetatable({ events = {}, scripts = {}, frameType = frameType, name = name,
+    parent = parent, shown = false, regions = {} }, Region)
   function f:RegisterEvent(e) self.events[e] = true end
   function f:UnregisterEvent(e) self.events[e] = nil end
   function f:SetScript(k, fn) self.scripts[k] = fn end
-  f.IsShown = function() return false end
+  function f:GetScript(k) return self.scripts[k] end
+  function f:Show() self.shown = true end
+  function f:Hide() self.shown = false end
+  function f:IsShown() return self.shown end
+  function f:ClearAllPoints() self.point = nil end
+  function f:SetPoint(...) self.point = { ... } end
+  function f:CreateTexture() local r = NewRegion("Texture"); self.regions[#self.regions + 1] = r; return r end
+  function f:CreateFontString() local r = NewRegion("FontString"); self.regions[#self.regions + 1] = r; return r end
+  -- Only frame types that are actually widgets get Show state; event frames stay hidden
+  if frameType == "Button" then f.shown = true end
   S.frames[#S.frames + 1] = f
+  if name then _G[name] = f end
   return f
 end
+
+-- Frame names are globals; clear ours so each fresh stub starts without the button
+rawset(_G, "AntiGriefMinimapButton", nil)
+
+-- Minimap: 140 px wide, centred at (500, 400) in UI units, scale 1
+Minimap = {
+  GetWidth = function() return 140 end, GetHeight = function() return 140 end,
+  GetCenter = function() return 500, 400 end, GetEffectiveScale = function() return 1 end,
+}
+S.cursor = { 500, 400 }
+function GetCursorPosition() return S.cursor[1], S.cursor[2] end
+
+-- Menu API (Blizzard_Menu): records the last menu built
+S.menus = {}
+MenuUtil = {
+  CreateContextMenu = function(owner, generator)
+    local menu = { owner = owner, items = {} }
+    local root = {}
+    function root.CreateTitle(_, text) menu.items[#menu.items + 1] = { kind = "title", text = text } end
+    function root.CreateButton(_, text, fn) menu.items[#menu.items + 1] = { kind = "button", text = text, fn = fn } end
+    function root.CreateDivider() menu.items[#menu.items + 1] = { kind = "divider" } end
+    generator(owner, root)
+    S.menus[#S.menus + 1] = menu
+    return menu
+  end,
+}
+
+GameTooltip = { lines = {} }
+function GameTooltip:SetOwner(owner) self.owner, self.lines = owner, {} end
+function GameTooltip:SetText(t) self.lines = { t } end
+function GameTooltip:AddLine(t) self.lines[#self.lines + 1] = t end
+function GameTooltip:Show() self.shown = true end
+function GameTooltip:Hide() self.shown = false end
 
 function S.fire(event, ...)
   for _, f in ipairs(S.frames) do
