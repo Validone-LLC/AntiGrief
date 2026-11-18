@@ -11,7 +11,10 @@ local STALE_AFTER = 600   -- re-inspect cached gear older than this
 local RETRY_AFTER = 8     -- wait before retrying someone out of range
 local LINK_RETRY  = 0.6   -- re-read slots whose links weren't cached yet
 
-Inspect.cache = {}        -- guid -> { guid, name, class, level, spec, items = { [slot] = link }, time }
+Inspect.cache = {}        -- guid -> { guid, name, class, level, spec, items = { [slot] = link }, ids = { [slot] = itemID }, time }
+-- Optional hook, called as onScan(guid, entry) after each completed inspect
+-- (the equip check in AntiGrief.lua uses it). Errors are caught.
+Inspect.onScan = nil
 local queue, queued, notBefore = {}, {}, {}
 -- The request in flight: { guid, unit, t, retry }. While `retry` is set we
 -- are waiting to re-read uncached links and must not start another inspect.
@@ -138,13 +141,18 @@ local function InRange(unit)
   return true -- can't tell; let the server decide
 end
 
+-- Item IDs are read even when the link isn't cached yet, so "is X equipped"
+-- can be answered from the first read.
 local function ReadItems(unit, entry)
   local missing = 0
   for _, slot in ipairs(D.INSPECT_SLOTS) do
     local link = GetInventoryItemLink(unit, slot)
+    local id = GetInventoryItemID and GetInventoryItemID(unit, slot)
+    if not id and link then id = tonumber(link:match("item:(%d+)")) end
+    entry.ids[slot] = id
     if link then
       entry.items[slot] = link
-    elseif GetInventoryItemID and GetInventoryItemID(unit, slot) then
+    elseif id then
       missing = missing + 1 -- item exists, link not cached yet
     end
   end
@@ -198,11 +206,12 @@ function Inspect.OnInspectReady(guid)
   if not unit then pending = nil; return end
 
   local entry = Basic(unit)
-  entry.items, entry.time = {}, GetTime()
+  entry.items, entry.ids, entry.time = {}, {}, GetTime()
   entry.spec = D.InspectSpecID(unit) -- nil when unknown (0, secret, API missing)
   local missing = ReadItems(unit, entry)
   Inspect.cache[guid] = entry
   notBefore[guid] = nil
+  if Inspect.onScan then pcall(Inspect.onScan, guid, entry) end
 
   if missing > 0 and C_Timer and C_Timer.After then
     -- Hold the queue until the re-read is done, so a new NotifyInspect

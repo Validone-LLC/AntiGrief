@@ -1621,7 +1621,7 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   ok(tab[1]:find("rolled NEED", 1, true), "headline in tab")
   eq(#S.banners, 1, "banner still shown")
   cmd("status")
-  eq(tab[#tab], "   output: AntiGrief / AG Logs chat tab", "status names the tab")
+  eq(tab[#tab], "   output: AntiGrief chat tab", "status names the tab")
 
   -- Closed window keeps its name but is neither shown nor docked
   windows[3][7], windows[3][9] = false, false
@@ -1735,6 +1735,115 @@ test("wins and Needs below the alert threshold are logged quietly; disabled logs
   eq(wins(), 0, "disabled")
 end)
 
+-- Equip check: 15 s after a flagged Need win, is the winner wearing it? ---
+
+local function equips()
+  local out = {}
+  for _, e in ipairs(ns.db.log) do if e.kind == "equip" then out[#out + 1] = e end end
+  return out
+end
+
+-- Bob scanned, then rolls Need on and wins the robe (High for a warrior)
+local function bobWinsRobe()
+  party()
+  scanBob()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.robe58))
+  eq(wins(), 1, "win logged")
+end
+
+test("equip check: not wearing it 15 s after the win -> alert, banner and a log line", function()
+  bobWinsRobe()
+  local banners, sounds, n0 = #S.banners, S.sounds, #S.notified
+  S.advance(14)
+  eq(#equips(), 0, "nothing before 15 s"); eq(#S.notified, n0, "no inspect yet")
+  S.advance(1.5)
+  eq(S.notified[#S.notified], "party1", "Bob re-inspected after 15 s")
+  eq(#equips(), 0, "waits for the inspect")
+  S.fire("INSPECT_READY", GUID.bob)
+  local e = equips()
+  eq(#e, 1, "one equip entry"); eq(e[1].equip, "no"); eq(e[1].who, "Bob"); eq(e[1].item, I.robe58); eq(e[1].sev, 3)
+  eq(S.chatCount("Bob|r hasn't equipped " .. I.robe58 .. " 15 s after winning it with Need"), 1, "chat alert")
+  eq(#S.banners, banners + 1, "banner"); ok(S.banners[#S.banners].text:find("hasn't equipped it", 1, true), "banner text")
+  eq(S.sounds, sounds + 1, "sound")
+  SlashCmdList.ANTIGRIEF("log")
+  eq(S.chatCount("|cffff4040--- Bob hasn't equipped it 15 s after winning|r"), 1, "history line, red, under the win")
+  S.advance(200)
+  eq(#equips(), 1, "settled once; no 'couldn't check' later")
+end)
+
+test("equip check: wearing it (any slot) -> logged green, no alert", function()
+  bobWinsRobe()
+  local banners = #S.banners
+  S.units.party1.items[5] = I.robe58 -- put it on
+  S.advance(15.5)
+  S.fire("INSPECT_READY", GUID.bob)
+  local e = equips()
+  eq(#e, 1); eq(e[1].equip, "yes")
+  eq(S.chatCount("hasn't equipped"), 0, "no alert"); eq(#S.banners, banners, "no banner")
+  SlashCmdList.ANTIGRIEF("log")
+  eq(S.chatCount("|cff40ff40--- Bob equipped it|r"), 1, "history line, green")
+end)
+
+test("equip check: already re-scanned wearing it before 15 s -> no new inspect needed", function()
+  bobWinsRobe()
+  S.units.party1.items[5] = I.robe58
+  ns.Inspect.Queue(GUID.bob, true) -- e.g. the re-scan on UNIT_INVENTORY_CHANGED
+  S.advance(2)
+  S.fire("INSPECT_READY", GUID.bob)
+  local n0 = #S.notified
+  S.advance(15)
+  eq(#S.notified, n0, "no second inspect")
+  eq(#equips(), 1); eq(equips()[1].equip, "yes")
+end)
+
+test("equip check: an old scan doesn't count; out of range for 2 min -> 'couldn't check', no alert", function()
+  bobWinsRobe()
+  local banners = #S.banners
+  S.units.party1.far = true
+  S.advance(15 + 119)
+  eq(#equips(), 0, "still waiting")
+  S.advance(2)
+  local e = equips()
+  eq(#e, 1); eq(e[1].equip, "unknown")
+  eq(S.chatCount("hasn't equipped"), 0, "no alert"); eq(#S.banners, banners, "no banner")
+  SlashCmdList.ANTIGRIEF("log")
+  eq(S.chatCount("--- Bob couldn't be checked"), 1, "history line")
+end)
+
+test("equip check: below the alert threshold it's logged quietly; disabled skips it", function()
+  party()
+  scanBob()
+  ns.db.minSeverity = 3
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest)) -- Low for a warrior
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.leatherChest))
+  S.advance(15.5)
+  S.fire("INSPECT_READY", GUID.bob)
+  eq(#equips(), 1, "logged"); eq(equips()[1].equip, "no")
+  eq(S.chatCount("hasn't equipped"), 0, "no alert below the threshold"); eq(#S.banners, 0)
+  ns.db.log = {}
+  ns.db.minSeverity = 2
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.robe58))
+  ns.db.enabled = false
+  S.advance(200)
+  eq(#equips(), 0, "disabled: no check")
+end)
+
+test("equip check: a fitting win and an item he already wears aren't alerted", function()
+  party()
+  scanBob()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.plateChest))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.plateChest))
+  S.advance(15.5)
+  eq(#equips(), 0, "fits -> no check")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger)) -- flagged, but already in his main hand
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
+  S.advance(15.5)
+  S.fire("INSPECT_READY", GUID.bob)
+  eq(#equips(), 1); eq(equips()[1].equip, "yes")
+end)
+
 -- Chat windows: a fake chat-window system for the AG Logs tab tests -----
 
 -- General and Combat Log, plus `extra` windows { name, shown, docked }.
@@ -1791,10 +1900,34 @@ test("history: Log opens a new 'AG Logs' tab with the whole log, oldest first", 
   ok(tab.lines[5]:find("[Staff]", 1, true), "newest drop last")
   eq(tab.lines[6], "   |cffff9930- Cy is Medium: probably not an upgrade|r", "Medium colour")
   eq(#S.chat, 0, "nothing in the main chat")
-  -- new AntiGrief output now goes to the AG Logs tab
+  -- new flags still go to the main chat; AG Logs gets a copy
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  ok(tab.lines[7]:find("rolled NEED", 1, true), "live alerts land in AG Logs")
+  eq(S.chatCount("rolled NEED"), 1, "live alert stays in the main chat")
+  ok(tab.lines[7]:find("rolled NEED", 1, true), "copy in AG Logs")
+  ok(tab.lines[8]:find("[High]", 1, true), "finding lines copied too")
+  local n = #tab.lines
+  SlashCmdList.ANTIGRIEF("status")
+  eq(#tab.lines, n, "slash replies aren't copied")
+  ok(S.chat[#S.chat]:find("output: main chat", 1, true), "status: main chat")
+end)
+
+test("history: a docked AG Logs tab doesn't hide alerts; an AntiGrief tab takes output without a second copy", function()
+  local W = chatSystem({ { "AG Logs", false, true } })
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("rolled NEED"), 1, "main chat has the alert")
+  eq(#W.frames[3].lines >= 2, true, "AG Logs has the copy")
+  -- an AntiGrief tab as well: output goes there, AG Logs still gets its copy
+  W.windows[4] = { name = "AntiGrief", shown = false, docked = true }
+  local ag = { lines = {} }
+  function ag:AddMessage(m) self.lines[#self.lines + 1] = m end
+  rawset(_G, "ChatFrame4", ag)
+  local logs0 = #W.frames[3].lines
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(S.chatCount("rolled NEED"), 1, "not in main chat any more")
+  ok(ag.lines[1]:find("rolled NEED", 1, true), "AntiGrief tab")
+  ok(#W.frames[3].lines > logs0, "AG Logs copy")
 end)
 
 test("history: an existing AG Logs tab is selected and redrawn, not duplicated", function()
@@ -1865,7 +1998,7 @@ test("history: one block per drop - every Need under the item, the winner last",
   eq(#L, 12, "no extra lines")
   -- /ag log shows the same layout for the recent drops
   SlashCmdList.ANTIGRIEF("log")
-  eq(L[#L], "      |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r", "/ag log, indented once more")
+  eq(S.chat[#S.chat], "      |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r", "/ag log in main chat, indented once more")
 end)
 
 test("history: Clear Log History wipes the log and the AG Logs tab", function()
@@ -1880,6 +2013,7 @@ test("history: Clear Log History wipes the log and the AG Logs tab", function()
   eq(tab.lines[1], "|cff40c0ffAntiGrief|r: log history cleared (2 entries removed)", "confirmation in the tab")
   SlashCmdList.ANTIGRIEF("clear")
   eq(tab.lines[#tab.lines], "|cff40c0ffAntiGrief|r: log history cleared (0 entries removed)", "plural on 0")
+  eq(S.chatCount("log history cleared (2 entries removed)"), 1, "also confirmed in the main chat")
 end)
 
 -- Minimap button ----------------------------------------------------------
@@ -1947,7 +2081,7 @@ test("minimap: click opens a Log / Settings / Clear Log History / Feedback menu;
 end)
 
 test("feedback: popup shows the Discord link selected and read-only; falls back to chat", function()
-  local url = "https://discord.gg/XvsKbTEv7"
+  local url = "https://discord.gg/3GSsbDWWbM"
   SlashCmdList.ANTIGRIEF("feedback")
   eq(#S.popups, 1, "popup shown")
   local dialog = S.popups[1]
