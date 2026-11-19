@@ -12,7 +12,7 @@ local function path(p) return root .. "/" .. p end
 
 local ADDON = "AntiGrief"
 -- Same order as AntiGrief.toc
-local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "Config.lua", "Minimap.lua", "AntiGrief.lua" }
+local TOC = { "Data.lua", "Inspect.lua", "Rules.lua", "Pawn.lua", "Config.lua", "Minimap.lua", "LogWindow.lua", "LootUI.lua", "AntiGrief.lua" }
 -- Config.lua (the options panel) is written separately; while it isn't in
 -- the repo the suite runs without it.
 local OPTIONAL = { ["Config.lua"] = true }
@@ -583,16 +583,15 @@ test("Need select + result lines alert once; again after 60 s", function()
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   S.fire("CHAT_MSG_LOOT", ROLLED(77, I.spellDagger, "Bob"))
-  eq(S.chatCount("rolled NEED"), 1, "alerts")
-  eq(S.chatCount("Bob|r rolled NEED on " .. I.spellDagger .. " - may be griefing loot"), 1, "headline wording")
-  eq(S.chatCount("[High]|r stats/effects (Intellect, spell power/healing) don't suit a Warrior"), 1, "[High] line")
+  eq(S.chatCount("rolled Need on"), 1, "alerts")
+  eq(S.chatCount("Bob|r rolled Need on " .. I.spellDagger .. ": |cffff4040stats/effects (Intellect, spell power/healing) don't suit a Warrior (High)|r"), 1, "one-line alert")
   eq(S.sounds, 1, "sounds")
   eq(#S.banners, 1, "banners")
   eq(#ns.db.log, 1, "log entries")
-  eq(S.chatCount("gear not scanned yet"), 1, "unscanned note")
+  eq(S.chatCount("gear not scanned"), 1, "unscanned note")
   S.advance(61)
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 2, "alerts after window")
+  eq(S.chatCount("rolled Need on"), 2, "alerts after window")
 end)
 
 test("no alert: own roll, below threshold, disabled, secret, not grouped", function()
@@ -601,7 +600,7 @@ test("no alert: own roll, below threshold, disabled, secret, not grouped", funct
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest))     -- Low only
   ns.db.minSeverity = 3
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58 ))          -- would be High...
-  eq(S.chatCount("rolled NEED"), 1, "High still alerts at sev 3")
+  eq(S.chatCount("rolled Need on"), 1, "High still alerts at sev 3")
   ns.db.enabled = false
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   ns.db.enabled = true
@@ -610,17 +609,17 @@ test("no alert: own roll, below threshold, disabled, secret, not grouped", funct
   S.fire("CHAT_MSG_LOOT", secret)
   S.SetGroup(S.units, nil)
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "alerts")
+  eq(S.chatCount("rolled Need on"), 1, "alerts")
 end)
 
 test("uncached item: the retry itself alerts once the item is cached", function()
   party()
   S.units.party1.class = "MAGE"
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.uncachedPlate)) -- the only chat line
-  eq(S.chatCount("rolled NEED"), 0, "no alert before cache")
+  eq(S.chatCount("rolled Need on"), 0, "no alert before cache")
   eq(S.loadRequests, 1, "requested item data")
   S.advance(1)
-  eq(S.chatCount("rolled NEED"), 1, "alert from the 1 s retry")
+  eq(S.chatCount("rolled Need on"), 1, "alert from the 1 s retry")
   eq(S.chatCount("item info not loaded"), 0, "item was loaded: full checks ran")
 end)
 
@@ -629,8 +628,8 @@ test("never-cached item: alert says only type checks ran", function()
   S.units.party1.class = "MAGE"
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.neverCachedPlate))
   S.advance(3)
-  eq(S.chatCount("rolled NEED"), 1, "alert")
-  eq(S.chatCount("(item info not loaded; only type checks ran)"), 1, "not-loaded note")
+  eq(S.chatCount("rolled Need on"), 1, "alert")
+  eq(S.chatCount("item info not loaded"), 1, "not-loaded note")
 end)
 
 test("never-cached item: judged after 3 retries with instant info", function()
@@ -638,9 +637,9 @@ test("never-cached item: judged after 3 retries with instant info", function()
   S.units.party1.class = "MAGE"
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.neverCachedPlate))
   S.advance(2.5)
-  eq(S.chatCount("rolled NEED"), 0, "still retrying")
+  eq(S.chatCount("rolled Need on"), 0, "still retrying")
   S.advance(1)
-  eq(S.chatCount("rolled NEED"), 1, "alert after retries")
+  eq(S.chatCount("rolled Need on"), 1, "alert after retries")
   eq(S.loadRequests, 3, "load requests")
 end)
 
@@ -652,6 +651,9 @@ test("announce goes to PARTY, also when LE_PARTY_CATEGORY_INSTANCE is missing", 
   eq(S.sent[1].channel, "PARTY", "channel")
   LE_PARTY_CATEGORY_INSTANCE = nil
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(#S.sent, 1, "rate limit: a second announcement within 30 s is held back")
+  S.advance(31)
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.staminaSpellGloves))
   eq(#S.sent, 2, "sent")
   eq(S.sent[2].channel, "PARTY", "channel without constant")
   ok(not S.sent[1].msg:lower():find("ninja", 1, true), "wording")
@@ -659,14 +661,45 @@ test("announce goes to PARTY, also when LE_PARTY_CATEGORY_INSTANCE is missing", 
     .. " doesn't look like a fit: stats/effects (Intellect, spell power/healing) don't suit a Warrior", "announce text")
 end)
 
-test("alert lines: [High] first, then [Low] notes, in spec format", function()
+test("alert: one line - top reason and severity, then grey notes; all reasons kept in the log", function()
   party()
+  local n0 = #S.chat
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58)) -- cloth Int robe on a warrior
-  local n = #S.chat
-  eq(S.chat[n - 3], "|cff40c0ffAntiGrief|r: |cffff4040Bob|r rolled NEED on " .. I.robe58 .. " - may be griefing loot", "headline")
-  eq(S.chat[n - 2], "   |cffff4040[High]|r stats/effects (Intellect) don't suit a Warrior", "[High] line")
-  eq(S.chat[n - 1], "   |cffd0d070[Low]|r Cloth is a lower armor type than a Warrior normally wears", "[Low] line")
-  eq(S.chat[n], "   |cff999999(gear not scanned yet; upgrade check skipped)|r", "unscanned note")
+  eq(#S.chat, n0 + 1, "a single chat line")
+  eq(S.chat[#S.chat], "|cff40c0ffAntiGrief|r: |TInterface\\DialogFrame\\UI-Dialog-Icon-AlertNew:0|t |cffff4040Bob|r rolled Need on "
+    .. I.robe58 .. ": |cffff4040stats/effects (Intellect) don't suit a Warrior (High)|r"
+    .. " |cff999999- gear not scanned, +1 more reason: /ag log|r", "alert line")
+  local e = ns.db.log[1]
+  eq(e.why, "stats/effects (Intellect) don't suit a Warrior", "top reason")
+  eq(#e.reasons, 2, "both reasons saved"); eq(e.reasons[2], "Cloth is a lower armor type than a Warrior normally wears")
+  eq(e.run, 1, "first flag this run")
+end)
+
+test("repeat offenders: the 2nd flag this run says so (chat, banner, history); a new instance or leaving resets", function()
+  party()
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(S.chatCount("2nd flag this run"), 1, "chat note")
+  ok(S.banners[#S.banners].text:find("Bob's 2nd flagged Need this run", 1, true), "banner")
+  eq(ns.db.log[1].run, 2, "saved count")
+  local lines = ns.FilteredHistory({})
+  local found = false
+  for _, l in ipairs(lines) do if l:find("(2nd flag this run)", 1, true) then found = true end end
+  ok(found, "history line notes the repeat")
+  SlashCmdList.ANTIGRIEF("status")
+  eq(S.chatCount("flagged this run: Bob 2"), 1, "status lists the count")
+  -- entering a new instance starts a new run
+  S.instanceInfo = { "Deadmines", "party", 1, "Normal", 5, 0, false, 36 }
+  S.fire("PLAYER_ENTERING_WORLD")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.staminaSpellGloves))
+  eq(ns.db.log[1].run, 1, "reset on a new instance")
+  S.fire("PLAYER_ENTERING_WORLD") -- same instance again (e.g. after a /reload): no reset
+  S.advance(61)
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(ns.db.log[1].run, 2, "same instance keeps counting")
+  S.SetGroup(S.units, nil)
+  S.fire("GROUP_ROSTER_UPDATE")
+  eq(next(ns._test.runFlags), nil, "leaving the group resets")
 end)
 
 test("log keeps the newest 50", function()
@@ -939,7 +972,7 @@ test("banner: shown via RaidWarningUtil with the raid-warning colour", function(
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(#S.banners, 1, "banners")
-  ok(S.banners[1].text:find("Bob may be griefing", 1, true), "banner text")
+  ok(S.banners[1].text:find("Bob's Need on " .. I.spellDagger .. " doesn't fit", 1, true), "banner text")
   eq(S.banners[1].color, ChatTypeInfo.RAID_WARNING, "colour")
 end)
 
@@ -947,7 +980,7 @@ test("banner: no banner API and no ChatTypeInfo doesn't break the alert", functi
   party()
   RaidWarningUtil, RaidNotice_AddMessage, ChatTypeInfo = nil, nil, nil
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "chat alert")
+  eq(S.chatCount("rolled Need on"), 1, "chat alert")
   eq(S.sounds, 1, "sound")
 end)
 
@@ -964,7 +997,7 @@ test("announce: skipped during chat messaging lockdown, alert still shown", func
   S.chatLockdown = true
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(#S.sent, 0, "nothing sent in lockdown")
-  eq(S.chatCount("rolled NEED"), 1, "private alert shown")
+  eq(S.chatCount("rolled Need on"), 1, "private alert shown")
   S.chatLockdown = false
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
   eq(#S.sent, 1, "sent after lockdown")
@@ -1103,10 +1136,14 @@ test("slash commands run without errors", function()
   cmd("test nothing"); ok(S.chatCount("usage: /ag test") == 1, "test usage")
   cmd("off"); eq(ns.db.enabled, false, "off")
   cmd("on"); eq(ns.db.enabled, true, "on")
-  cmd("log"); ok(S.chatCount("no flags logged") == 1, "empty log")
+  cmd("log")
+  local win = rawget(_G, "AntiGriefLogWindow")
+  ok(win and win:IsShown(), "log opens the log window")
+  eq(win.messages.lines[1], "|cff999999No flags logged yet.|r", "empty log")
   ns.db.minSeverity = 2
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  cmd("log"); ok(S.chatCount("recent drops:") == 1, "log")
+  ok(win.messages.lines[1]:find(I.spellDagger, 1, true), "new flag redraws the open window")
+  cmd("log"); ok(not win:IsShown(), "log again closes it")
   cmd("clear"); eq(#ns.db.log, 0, "cleared")
 end)
 
@@ -1389,7 +1426,7 @@ test("config: RegisterAddOnSetting raising -> one 'unavailable' line, /ag config
   eq(S.chatCount("options panel error"), 0, "contained inside Config.Init")
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "Need alert still fires")
+  eq(S.chatCount("rolled Need on"), 1, "Need alert still fires")
 end)
 
 test("config: an error in Init is reported and the addon still starts", function()
@@ -1402,7 +1439,7 @@ test("config: an error in Init is reported and the addon still starts", function
   items()
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "alerts still work")
+  eq(S.chatCount("rolled Need on"), 1, "alerts still work")
 end)
 
 test("config: Init and /ag config are skipped without ns.Config", function()
@@ -1464,7 +1501,8 @@ if HAS_CONFIG then
     { "sound", "checkbox", "boolean" }, { "screen", "checkbox", "boolean" },
     { "announce", "checkbox", "boolean" }, { "dropReport", "checkbox", "boolean" },
     { "upgradeMargin", "slider", "number" }, { "usePawn", "checkbox", "boolean" },
-    { "minimapButton", "checkbox", "boolean" },
+    { "skipFriends", "checkbox", "boolean" }, { "tooltip", "checkbox", "boolean" },
+    { "lootBadge", "checkbox", "boolean" }, { "minimapButton", "checkbox", "boolean" },
   }
 
   local function settingFor(key)
@@ -1473,11 +1511,11 @@ if HAS_CONFIG then
     end
   end
 
-  test("Config.lua: Init registers all nine controls bound to the right ns.db keys", function()
+  test("Config.lua: Init registers all twelve controls bound to the right ns.db keys", function()
     eq(#S.cfg.categories, 1, "one category")
     eq(S.cfg.addOnCategories[1], S.cfg.categories[1], "registered as an addon category")
     eq(#S.cfg.addOnCategories, 1, "registered once")
-    eq(#S.cfg.controls, 9, "controls")
+    eq(#S.cfg.controls, 12, "controls")
     local vars = {}
     for i, want in ipairs(EXPECTED) do
       local c = S.cfg.controls[i]
@@ -1556,7 +1594,7 @@ if HAS_CONFIG then
   test("Config.lua: Init runs only once, even when called twice", function()
     ns.Config.Init()
     ns.Config.Init()
-    eq(#S.cfg.controls, 9, "still 9 controls")
+    eq(#S.cfg.controls, 12, "still 12 controls")
     eq(#S.cfg.categories, 1, "one category")
     eq(#S.cfg.addOnCategories, 1, "RegisterAddOnCategory called once")
   end)
@@ -1617,16 +1655,18 @@ test("output: an 'AntiGrief' chat tab gets all messages; closed or missing tab f
   local mainBefore = #S.chat
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
   eq(#S.chat, mainBefore, "nothing in main chat")
-  ok(#tab >= 2, "alert headline and finding lines in the tab")
-  ok(tab[1]:find("rolled NEED", 1, true), "headline in tab")
+  eq(#tab, 1, "the one-line alert in the tab")
+  ok(tab[1]:find("rolled Need on", 1, true), "headline in tab")
   eq(#S.banners, 1, "banner still shown")
   cmd("status")
-  eq(tab[#tab], "   output: AntiGrief chat tab", "status names the tab")
+  local named = false
+  for _, l in ipairs(tab) do if l == "   output: AntiGrief chat tab" then named = true end end
+  ok(named, "status names the tab")
 
   -- Closed window keeps its name but is neither shown nor docked
   windows[3][7], windows[3][9] = false, false
   cmd("status")
-  ok(S.chat[#S.chat]:find("output: main chat", 1, true), "closed tab -> main chat")
+  ok(S.chatCount("output: main chat") > 0, "closed tab -> main chat")
 
   -- A GetChatWindowInfo error never breaks output
   rawset(_G, "GetChatWindowInfo", function() error("boom") end)
@@ -1668,12 +1708,12 @@ test("wins: Need then won on a misfit -> chat line and a 'won' log entry", funct
   local e = ns.db.log[1]
   eq(e.kind, "won"); eq(e.who, "Bob"); eq(e.item, I.spellDagger); eq(e.sev, 3)
   ok(e.why:find("don't suit a Warrior", 1, true), "reason kept: " .. tostring(e.why))
-  eq(S.chatCount("Bob|r won " .. I.spellDagger .. " with Need - doesn't look like a fit"), 1, "chat line")
+  eq(S.chatCount("Bob|r won " .. I.spellDagger .. " with Need: |cffff4040stats/effects"), 1, "chat line")
   eq(#S.banners, 1, "no second banner for the win"); eq(S.sounds, 1, "no second sound")
   -- history shows it as a win under the item
-  SlashCmdList.ANTIGRIEF("log")
-  eq(S.chatCount("|cffff66ff-- Bob won and is High for: stats/effects"), 1, "won line, own colour")
-  eq(S.chatCount("- Bob is High: stats/effects"), 1, "the Need line under the same item")
+  local h = table.concat((ns.FilteredHistory({})), "\n")
+  ok(h:find("|cffff66ff-- Bob won and is High for: stats/effects", 1, true), "won line, own colour")
+  ok(h:find("- Bob is High: stats/effects", 1, true), "the Need line under the same item")
 end)
 
 test("wins: Need-only - a default won line without a seen Need is ignored", function()
@@ -1725,7 +1765,7 @@ test("wins and Needs below the alert threshold are logged quietly; disabled logs
   S.fire("CHAT_MSG_LOOT", WON("Bob", I.leatherChest))
   eq(#ns.db.log, 2, "Low Need and Low win both in the history")
   eq(ns.db.log[2].sev, 1, "Need logged as Low"); eq(ns.db.log[1].kind, "won", "win logged")
-  eq(S.chatCount("rolled NEED"), 0, "no alert below the threshold")
+  eq(S.chatCount("rolled Need on"), 0, "no alert below the threshold")
   eq(S.chatCount(" won "), 0, "no win line below the threshold")
   eq(#S.banners, 0, "no banner"); eq(S.sounds, 0, "no sound")
   eq(wins(), 1, "one win")
@@ -1735,13 +1775,15 @@ test("wins and Needs below the alert threshold are logged quietly; disabled logs
   eq(wins(), 0, "disabled")
 end)
 
--- Equip check: 15 s after a flagged Need win, is the winner wearing it? ---
+-- Equip check: did the winner put it on? Two looks, alert only on the 2nd --
 
 local function equips()
   local out = {}
   for _, e in ipairs(ns.db.log) do if e.kind == "equip" then out[#out + 1] = e end end
   return out
 end
+
+local function historyText() return table.concat((ns.FilteredHistory({})), "\n") end
 
 -- Bob scanned, then rolls Need on and wins the robe (High for a warrior)
 local function bobWinsRobe()
@@ -1752,37 +1794,59 @@ local function bobWinsRobe()
   eq(wins(), 1, "win logged")
 end
 
-test("equip check: not wearing it 15 s after the win -> alert, banner and a log line", function()
+-- Runs the inspect the equip check asked for (the queue pumps every 0.5 s)
+local function answerInspect()
+  S.advance(0.5)
+  S.fire("INSPECT_READY", GUID.bob)
+end
+
+test("equip check: not on at 15 s, still not on 2 min later out of combat -> alert, banner, red history line", function()
   bobWinsRobe()
   local banners, sounds, n0 = #S.banners, S.sounds, #S.notified
   S.advance(14)
-  eq(#equips(), 0, "nothing before 15 s"); eq(#S.notified, n0, "no inspect yet")
-  S.advance(1.5)
-  eq(S.notified[#S.notified], "party1", "Bob re-inspected after 15 s")
-  eq(#equips(), 0, "waits for the inspect")
-  S.fire("INSPECT_READY", GUID.bob)
+  eq(#S.notified, n0, "no inspect before 15 s")
+  S.advance(1)
+  answerInspect()
+  eq(S.notified[#S.notified], "party1", "first look at 15 s")
+  eq(#equips(), 0, "not on yet: no verdict, waits for the second look")
+  eq(S.chatCount("hasn't equipped"), 0, "no alert after the first look")
+  local n1 = #S.notified
+  S.advance(100)
+  eq(#S.notified, n1, "second look not before 2 min")
+  S.advance(5)
+  answerInspect()
+  ok(#S.notified > n1, "second look")
   local e = equips()
   eq(#e, 1, "one equip entry"); eq(e[1].equip, "no"); eq(e[1].who, "Bob"); eq(e[1].item, I.robe58); eq(e[1].sev, 3)
-  eq(S.chatCount("Bob|r hasn't equipped " .. I.robe58 .. " 15 s after winning it with Need"), 1, "chat alert")
+  ok(e[1].after >= 120 and e[1].after <= 130, "time since the win saved: " .. tostring(e[1].after))
+  eq(S.chatCount("Bob|r hasn't equipped " .. I.robe58 .. " 2 min after winning it with Need"), 1, "chat alert")
   eq(#S.banners, banners + 1, "banner"); ok(S.banners[#S.banners].text:find("hasn't equipped it", 1, true), "banner text")
   eq(S.sounds, sounds + 1, "sound")
-  SlashCmdList.ANTIGRIEF("log")
-  eq(S.chatCount("|cffff4040--- Bob hasn't equipped it 15 s after winning|r"), 1, "history line, red, under the win")
-  S.advance(200)
-  eq(#equips(), 1, "settled once; no 'couldn't check' later")
+  ok(historyText():find("|cffff4040--- Bob hasn't equipped it 2 min after winning|r", 1, true), "history line, red")
+  S.advance(700)
+  eq(#equips(), 1, "settled once")
 end)
 
-test("equip check: wearing it (any slot) -> logged green, no alert", function()
+test("equip check: put on between the two looks -> logged green, no alert", function()
   bobWinsRobe()
   local banners = #S.banners
-  S.units.party1.items[5] = I.robe58 -- put it on
-  S.advance(15.5)
-  S.fire("INSPECT_READY", GUID.bob)
+  S.advance(15); answerInspect()
+  S.units.party1.items[5] = I.robe58 -- puts it on after the pull
+  S.advance(105); answerInspect()
   local e = equips()
   eq(#e, 1); eq(e[1].equip, "yes")
   eq(S.chatCount("hasn't equipped"), 0, "no alert"); eq(#S.banners, banners, "no banner")
-  SlashCmdList.ANTIGRIEF("log")
-  eq(S.chatCount("|cff40ff40--- Bob equipped it|r"), 1, "history line, green")
+  ok(historyText():find("|cff40ff40--- Bob equipped it|r", 1, true), "history line, green")
+end)
+
+test("equip check: wearing it at the first look settles it at once", function()
+  bobWinsRobe()
+  S.units.party1.items[5] = I.robe58
+  S.advance(15); answerInspect()
+  eq(#equips(), 1); eq(equips()[1].equip, "yes")
+  local n = #S.notified
+  S.advance(300)
+  eq(#S.notified, n, "no second look needed")
 end)
 
 test("equip check: already re-scanned wearing it before 15 s -> no new inspect needed", function()
@@ -1797,18 +1861,43 @@ test("equip check: already re-scanned wearing it before 15 s -> no new inspect n
   eq(#equips(), 1); eq(equips()[1].equip, "yes")
 end)
 
-test("equip check: an old scan doesn't count; out of range for 2 min -> 'couldn't check', no alert", function()
+test("equip check: the second look waits for combat to end (Bob's or yours), up to 10 min", function()
+  bobWinsRobe()
+  S.advance(15); answerInspect()
+  S.units.party1.combat = true
+  local n1 = #S.notified
+  S.advance(300)
+  eq(#S.notified, n1, "Bob in combat: wait")
+  S.units.party1.combat = false
+  S.combat = true -- now you're fighting; your own inspects pause too
+  S.advance(30)
+  eq(#S.notified, n1, "you in combat: wait")
+  S.combat = false
+  S.advance(5); answerInspect()
+  eq(#equips(), 1, "second look once everyone is out of combat"); eq(equips()[1].equip, "no")
+  -- a fight that never ends: the second look happens at 10 min anyway
+  ns.db.log = {}
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.staminaSpellGloves))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.staminaSpellGloves))
+  S.advance(15); answerInspect()
+  S.units.party1.combat = true
+  S.advance(560)
+  eq(#equips(), 0, "still waiting at 9.5 min")
+  S.advance(25); answerInspect()
+  eq(#equips(), 1, "looked at 10 min"); eq(equips()[1].equip, "no")
+end)
+
+test("equip check: out of inspect range for both looks -> 'couldn't be checked', no alert", function()
   bobWinsRobe()
   local banners = #S.banners
   S.units.party1.far = true
-  S.advance(15 + 119)
-  eq(#equips(), 0, "still waiting")
-  S.advance(2)
+  S.advance(15 + 121)  -- first look gives up after 2 min
+  eq(#equips(), 0, "first look unknown: tries again")
+  S.advance(5 + 121)   -- second look gives up too
   local e = equips()
   eq(#e, 1); eq(e[1].equip, "unknown")
   eq(S.chatCount("hasn't equipped"), 0, "no alert"); eq(#S.banners, banners, "no banner")
-  SlashCmdList.ANTIGRIEF("log")
-  eq(S.chatCount("--- Bob couldn't be checked"), 1, "history line")
+  ok(historyText():find("--- Bob couldn't be checked", 1, true), "history line")
 end)
 
 test("equip check: below the alert threshold it's logged quietly; disabled skips it", function()
@@ -1817,8 +1906,8 @@ test("equip check: below the alert threshold it's logged quietly; disabled skips
   ns.db.minSeverity = 3
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.leatherChest)) -- Low for a warrior
   S.fire("CHAT_MSG_LOOT", WON("Bob", I.leatherChest))
-  S.advance(15.5)
-  S.fire("INSPECT_READY", GUID.bob)
+  S.advance(15); answerInspect()
+  S.advance(105); answerInspect()
   eq(#equips(), 1, "logged"); eq(equips()[1].equip, "no")
   eq(S.chatCount("hasn't equipped"), 0, "no alert below the threshold"); eq(#S.banners, 0)
   ns.db.log = {}
@@ -1826,11 +1915,11 @@ test("equip check: below the alert threshold it's logged quietly; disabled skips
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
   S.fire("CHAT_MSG_LOOT", WON("Bob", I.robe58))
   ns.db.enabled = false
-  S.advance(200)
+  S.advance(700)
   eq(#equips(), 0, "disabled: no check")
 end)
 
-test("equip check: a fitting win and an item he already wears aren't alerted", function()
+test("equip check: a fitting win isn't checked; an item he already wears is 'equipped'", function()
   party()
   scanBob()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.plateChest))
@@ -1839,9 +1928,24 @@ test("equip check: a fitting win and an item he already wears aren't alerted", f
   eq(#equips(), 0, "fits -> no check")
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger)) -- flagged, but already in his main hand
   S.fire("CHAT_MSG_LOOT", WON("Bob", I.spellDagger))
-  S.advance(15.5)
-  S.fire("INSPECT_READY", GUID.bob)
+  S.advance(15); answerInspect()
   eq(#equips(), 1); eq(equips()[1].equip, "yes")
+end)
+
+test("off-spec Need win: one severity lower, noted, and not equip-checked", function()
+  party()
+  scanBob()
+  S.fire("CHAT_MSG_LOOT", WON_OFFSPEC("Bob", 12, I.robe58)) -- High for a warrior
+  local e = ns.db.log[1]
+  eq(e.kind, "won"); eq(e.sev, 2, "High -> Medium"); eq(e.offSpec, true)
+  eq(S.chatCount("off-spec Need, one severity lower"), 1, "chat note")
+  ok(historyText():find("(off-spec Need)", 1, true), "history note")
+  S.advance(700)
+  eq(#equips(), 0, "no equip check for off-spec")
+  -- Low stays Low; below the threshold it's quiet
+  S.fire("CHAT_MSG_LOOT", WON_OFFSPEC("Bob", 12, I.leatherChest))
+  eq(ns.db.log[1].sev, 1, "Low stays Low")
+  eq(S.chatCount("won " .. I.leatherChest), 0, "below the threshold: logged only")
 end)
 
 -- Chat windows: a fake chat-window system for the AG Logs tab tests -----
@@ -1903,21 +2007,21 @@ test("history: Log opens a new 'AG Logs' tab with the whole log, oldest first", 
   -- new flags still go to the main chat; AG Logs gets a copy
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "live alert stays in the main chat")
-  ok(tab.lines[7]:find("rolled NEED", 1, true), "copy in AG Logs")
-  ok(tab.lines[8]:find("[High]", 1, true), "finding lines copied too")
+  eq(S.chatCount("rolled Need on"), 1, "live alert stays in the main chat")
+  ok(tab.lines[7]:find("rolled Need on", 1, true), "copy in AG Logs")
+  eq(#tab.lines, 7, "one line per alert")
   local n = #tab.lines
   SlashCmdList.ANTIGRIEF("status")
   eq(#tab.lines, n, "slash replies aren't copied")
-  ok(S.chat[#S.chat]:find("output: main chat", 1, true), "status: main chat")
+  ok(S.chatCount("output: main chat") > 0, "status: main chat")
 end)
 
 test("history: a docked AG Logs tab doesn't hide alerts; an AntiGrief tab takes output without a second copy", function()
   local W = chatSystem({ { "AG Logs", false, true } })
   party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "main chat has the alert")
-  eq(#W.frames[3].lines >= 2, true, "AG Logs has the copy")
+  eq(S.chatCount("rolled Need on"), 1, "main chat has the alert")
+  eq(#W.frames[3].lines, 1, "AG Logs has the copy")
   -- an AntiGrief tab as well: output goes there, AG Logs still gets its copy
   W.windows[4] = { name = "AntiGrief", shown = false, docked = true }
   local ag = { lines = {} }
@@ -1925,8 +2029,8 @@ test("history: a docked AG Logs tab doesn't hide alerts; an AntiGrief tab takes 
   rawset(_G, "ChatFrame4", ag)
   local logs0 = #W.frames[3].lines
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
-  eq(S.chatCount("rolled NEED"), 1, "not in main chat any more")
-  ok(ag.lines[1]:find("rolled NEED", 1, true), "AntiGrief tab")
+  eq(S.chatCount("rolled Need on"), 1, "not in main chat any more")
+  ok(ag.lines[1]:find("rolled Need on", 1, true), "AntiGrief tab")
   ok(#W.frames[3].lines > logs0, "AG Logs copy")
 end)
 
@@ -1996,9 +2100,16 @@ test("history: one block per drop - every Need under the item, the winner last",
   eq(L[11], "   |cffff9930- Zed is Medium: probably not an upgrade|r")
   eq(L[12], "   |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r")
   eq(#L, 12, "no extra lines")
-  -- /ag log shows the same layout for the recent drops
-  SlashCmdList.ANTIGRIEF("log")
-  eq(S.chat[#S.chat], "      |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r", "/ag log in main chat, indented once more")
+  -- the log window lists the same drops, filterable
+  local lines, totals = ns.FilteredHistory({})
+  eq(lines[#lines], "   |cffff66ff-- Zed won and is Medium for: probably not an upgrade|r", "window: same layout")
+  eq(totals[1].name, "Bob", "most flagged first"); eq(totals[1].needs, 1); eq(totals[1].wins, 1)
+  lines = ns.FilteredHistory({ player = "ze" })
+  eq(#lines, 3, "player filter: Zed's drop only (header + 2)")
+  lines = ns.FilteredHistory({ minSev = 3 })
+  for _, l in ipairs(lines) do ok(not l:find("Medium", 1, true) and not l:find("is Low", 1, true), "High only: " .. l) end
+  lines = ns.FilteredHistory({ winsOnly = true })
+  for _, l in ipairs(lines) do ok(not l:find("^   |c%x+%- "), "wins only: " .. l) end
 end)
 
 test("history: Clear Log History wipes the log and the AG Logs tab", function()
@@ -2052,65 +2163,259 @@ test("minimap: AntiGrief logo on a black disc, shown at 225 degrees by default",
   near(p[4], math.cos(math.rad(225)) * r, "x"); near(p[5], math.sin(math.rad(225)) * r, "y")
 end)
 
-test("minimap: click opens a Log / Settings / Clear Log History / Feedback menu; each item does its job", function()
-  local W = chatSystem()
+local function menuItems()
+  local m = ns.MinimapButton.Menu()
+  return m, m and m.items
+end
+local function pick(text)
+  local _, mitems = menuItems()
+  for _, it in ipairs(mitems) do
+    if it.text == text then S.run(it.button, "OnClick"); return true end
+  end
+  error("no menu item " .. text)
+end
+
+test("minimap: click opens our own Log / Settings / Clear Log History / Feedback menu (not Blizzard's Menu API)", function()
+  local menuCalls = 0
+  MenuUtil = { CreateContextMenu = function() menuCalls = menuCalls + 1 end }
   ns.db.log[1] = { t = 1, who = "Bob", item = "[Robe]", sev = 3, why = "Warrior can't use Cloth" }
   local b = mmButton()
   b.scripts.OnClick(b, "LeftButton")
-  eq(#S.menus, 1, "menu opened")
-  local m = S.menus[1]
-  eq(m.owner, b, "anchored to the button")
-  eq(m.items[1].kind, "title"); eq(m.items[1].text, "AntiGrief")
-  eq(m.items[2].text, "Log"); eq(m.items[3].text, "Settings")
-  eq(m.items[4].kind, "divider")
-  eq(m.items[5].text, "Clear Log History", "Clear follows the divider")
-  eq(m.items[6].text, "Feedback", "Feedback is below Clear Log History")
-  eq(#m.items, 6, "four choices plus title and divider")
-  m.items[2].fn()
-  eq(#W.opened, 1, "Log opens the AG Logs tab")
-  m.items[5].fn()
+  local m, mitems = menuItems()
+  ok(m and m:IsShown(), "menu shown")
+  eq(menuCalls, 0, "MenuUtil never used (it taints Blizzard's unit menus)")
+  eq(m.point[1], "TOPRIGHT"); eq(m.point[2], b, "anchored to the button")
+  eq(mitems[1].text, "Log"); eq(mitems[2].text, "Settings")
+  ok(mitems[3].divider, "divider")
+  eq(mitems[4].text, "Clear Log History", "Clear follows the divider")
+  eq(mitems[5].text, "Feedback", "Feedback is last")
+  eq(#mitems, 5, "four choices plus the divider")
+  local special = false
+  for _, n in ipairs(UISpecialFrames) do if n == "AntiGriefMenu" then special = true end end
+  ok(special, "Escape closes it (UISpecialFrames)")
+  -- a click elsewhere closes it; a click on the menu or its button doesn't
+  m.mouseOver = true; S.run(m, "OnEvent", "GLOBAL_MOUSE_DOWN", "LeftButton")
+  ok(m:IsShown(), "click inside keeps it")
+  m.mouseOver = false; S.run(m, "OnEvent", "GLOBAL_MOUSE_DOWN", "LeftButton")
+  ok(not m:IsShown(), "click outside closes it")
+  -- each item closes the menu and does its job
+  b.scripts.OnClick(b, "LeftButton")
+  pick("Log")
+  ok(not m:IsShown(), "picking closes the menu")
+  ok(rawget(_G, "AntiGriefLogWindow"):IsShown(), "Log opens the log window")
+  pick("Clear Log History")
   eq(#ns.db.log, 0, "Clear Log History empties the log")
-  m.items[6].fn()
-  eq(#S.popups, 1, "Feedback opens the copy-link popup")
+  pick("Feedback")
+  ok(rawget(_G, "AntiGriefFeedback"):IsShown(), "Feedback opens the copy-link window")
   if HAS_CONFIG then
-    m.items[3].fn()
+    pick("Settings")
     eq(#S.cfg.opened, 1, "Settings opens the options page")
   end
   b.scripts.OnClick(b, "RightButton")
-  eq(#S.menus, 2, "right-click opens the same menu")
+  ok(m:IsShown(), "right-click opens the same menu")
+  b.scripts.OnClick(b, "RightButton")
+  ok(not m:IsShown(), "clicking the button again closes it")
 end)
 
-test("feedback: popup shows the Discord link selected and read-only; falls back to chat", function()
+test("minimap: shift-click opens the log window, shift-right-click the settings", function()
+  local b = mmButton()
+  S.shift = true
+  b.scripts.OnClick(b, "LeftButton")
+  ok(rawget(_G, "AntiGriefLogWindow"):IsShown(), "log window")
+  ok(not (ns.MinimapButton.Menu() and ns.MinimapButton.Menu():IsShown()), "no menu")
+  if HAS_CONFIG then
+    b.scripts.OnClick(b, "RightButton")
+    eq(#S.cfg.opened, 1, "settings")
+  end
+end)
+
+test("feedback: our own window shows the Discord link selected and read-only; Escape/Enter/Close hide it", function()
   local url = "https://discord.gg/3GSsbDWWbM"
+  local popups = #S.popups
   SlashCmdList.ANTIGRIEF("feedback")
-  eq(#S.popups, 1, "popup shown")
-  local dialog = S.popups[1]
-  local eb = dialog:GetEditBox()
+  local f = rawget(_G, "AntiGriefFeedback")
+  ok(f and f:IsShown(), "window shown")
+  eq(#S.popups, popups, "no StaticPopup (shared Blizzard dialogs)")
+  local eb = f.editBox
   eq(eb.text, url, "edit box holds the invite")
   ok(eb.highlighted and eb.focused, "selected and focused, ready for Ctrl+C")
-  eb:SetText(url .. "x")
+  eb:SetText(url .. "x"); S.run(eb, "OnTextChanged")
   eq(eb.text, url, "typing can't change the link")
-  StaticPopupDialogs.ANTIGRIEF_FEEDBACK.EditBoxOnEnterPressed(eb)
-  eq(dialog.shown, false, "Enter closes it")
+  S.run(eb, "OnEnterPressed")
+  ok(not f:IsShown(), "Enter closes it")
   SlashCmdList.ANTIGRIEF("discord")
-  eq(#S.popups, 2, "/ag discord is an alias")
-  StaticPopup_Show = nil
-  SlashCmdList.ANTIGRIEF("feedback")
-  eq(S.chatCount(url), 1, "no StaticPopup: link printed in chat")
+  ok(f:IsShown(), "/ag discord is an alias")
+  local close = rawget(_G, "AntiGriefFeedbackClose")
+  S.run(close, "OnClick")
+  ok(not f:IsShown(), "Close button")
+  local special = false
+  for _, n in ipairs(UISpecialFrames) do if n == "AntiGriefFeedback" then special = true end end
+  ok(special, "Escape closes it")
 end)
 
-test("minimap: without the menu API, left-click opens settings and right-click the log", function()
-  local b = mmButton()
-  MenuUtil = nil
-  b.scripts.OnClick(b, "RightButton")
-  eq(S.chatCount("no flags logged"), 1, "right-click -> log (history; no chat windows here, so in main chat)")
+test("feedback: if the window can't be built, the link is printed", function()
+  local url = "https://discord.gg/3GSsbDWWbM"
+  local cf = CreateFrame
+  CreateFrame = function() error("no frames") end
+  SlashCmdList.ANTIGRIEF("feedback")
+  CreateFrame = cf
+  eq(S.chatCount(url), 1, "link printed in chat")
+end)
+
+test("AddOns menu (compartment): TOC entries; click opens the log window, right-click settings", function()
+  local toc = assert(io.open(path("AntiGrief.toc"))):read("*a")
+  ok(toc:find("## AddonCompartmentFunc: AntiGrief_OnAddonCompartmentClick", 1, true), "click function in TOC")
+  ok(toc:find("## AddonCompartmentFuncOnEnter: AntiGrief_OnAddonCompartmentEnter", 1, true), "enter function in TOC")
+  ok(toc:find("## IconTexture:", 1, true), "icon in TOC")
+  AntiGrief_OnAddonCompartmentClick("AntiGrief", "LeftButton")
+  ok(rawget(_G, "AntiGriefLogWindow"):IsShown(), "left-click -> log window")
   if HAS_CONFIG then
-    b.scripts.OnClick(b, "LeftButton")
-    eq(#S.cfg.opened, 1, "left-click -> settings")
+    AntiGrief_OnAddonCompartmentClick("AntiGrief", "RightButton")
+    eq(#S.cfg.opened, 1, "right-click -> settings")
   end
-  MenuUtil = { CreateContextMenu = function() error("menu broke") end }
-  b.scripts.OnClick(b, "RightButton")
-  eq(S.chatCount("no flags logged"), 2, "menu error -> same fallback")
+  local owner = {}
+  AntiGrief_OnAddonCompartmentEnter("AntiGrief", owner)
+  eq(GameTooltip.owner, owner, "tooltip on the menu entry")
+  local all = table.concat(GameTooltip.lines, "\n")
+  ok(all:find("Click: log window; right-click: settings", 1, true), "compartment usage line")
+  ok(not all:find("Drag", 1, true), "no drag hint there")
+  AntiGrief_OnAddonCompartmentLeave("AntiGrief", owner)
+  ok(not GameTooltip.shown, "hidden on leave")
+end)
+
+-- Log window ------------------------------------------------------------
+
+test("log window: filters by player, severity and wins; totals per player; Reset", function()
+  ns.db.log = {
+    { t = 2300, kind = "won", who = "Zed", item = "[Robe]", sev = 2, why = "probably not an upgrade" },
+    { t = 2200, who = "Zed", item = "[Robe]", sev = 2, why = "probably not an upgrade" },
+    { t = 1020, kind = "equip", who = "Bob", item = "[Staff]", sev = 3, equip = "no", after = 125 },
+    { t = 1010, kind = "won", who = "Bob", item = "[Staff]", sev = 3, why = "can't use Staves" },
+    { t = 1000, who = "Bob", item = "[Staff]", sev = 3, why = "can't use Staves", reasons = { "can't use Staves", "no value under any Pawn scale" } },
+  }
+  SlashCmdList.ANTIGRIEF("log")
+  local W = ns.LogWindow
+  local win = W.Frame()
+  local text = table.concat(win.messages.lines, "\n")
+  ok(text:find("can't use Staves; no value under any Pawn scale", 1, true), "every reason listed in the window")
+  ok(text:find("hasn't equipped it 2 min after winning", 1, true), "equip result")
+  eq(W.totals[1].name, "Bob"); eq(W.totals[1].needs, 1); eq(W.totals[1].wins, 1); eq(W.totals[1].unworn, 1)
+  ok(win.totals.text:find("Bob|r: 1 Need, 1 win, 1 not equipped", 1, true), "totals line")
+  win.name:SetText("ze"); S.run(win.name, "OnTextChanged")
+  ok(not table.concat(win.messages.lines, "\n"):find("Bob", 1, true), "player filter")
+  S.run(win.sev, "OnClick") -- Low+
+  S.run(win.sev, "OnClick") -- Medium+
+  S.run(win.sev, "OnClick") -- High
+  eq(win.sev.text, "Severity: High")
+  eq(win.messages.lines[1], "|cff999999Nothing matches these filters.|r", "Zed has nothing High")
+  S.run(win.reset, "OnClick")
+  eq(win.sev.text, "Severity: All"); eq(W.Filter().player, "")
+  win.wins:SetChecked(true); S.run(win.wins, "OnClick")
+  for _, l in ipairs(win.messages.lines) do
+    ok(not l:find("^   |c%x+%- "), "wins only: " .. l)
+  end
+  local special = false
+  for _, n in ipairs(UISpecialFrames) do if n == "AntiGriefLogWindow" then special = true end end
+  ok(special, "Escape closes it")
+end)
+
+-- Roll-window badges and tooltip lines -------------------------------------
+
+test("roll badge: under the matching roll window: who it fits, who it doesn't; hides with the roll", function()
+  party({ party2 = { guid = GUID.ann, name = "Ann", class = "MAGE", level = 60 } })
+  S.rollFrame(1, 6) -- another roll's window, shown first
+  local rf = S.rollFrame(2, 7)
+  S.rolls[7] = I.robe58
+  S.fire("START_LOOT_ROLL", 7)
+  local badge = ns.LootUI.Badge(2)
+  ok(badge and badge:IsShown(), "badge on GroupLootFrame2")
+  ok(not ns.LootUI.Badge(1), "not on the other roll's window")
+  eq(badge.point[2], rf, "anchored to the roll window")
+  ok(badge.text.text:find("Fits: Me, Ann", 1, true), "fits line: " .. tostring(badge.text.text))
+  ok(badge.text.text:find("Not for: Bob", 1, true), "misfits line")
+  eq(rf.rollID, 7, "Blizzard's frame untouched")
+  rf:Hide()
+  S.run(badge, "OnUpdate", 0.3)
+  ok(not badge:IsShown(), "hidden with the roll window")
+  -- off: no badge
+  ns.db.lootBadge = false
+  local rf3 = S.rollFrame(3, 8)
+  S.rolls[8] = I.robe58
+  S.fire("START_LOOT_ROLL", 8)
+  ok(not ns.LootUI.Badge(3), "lootBadge off")
+  eq(rf3.rollID, 8)
+end)
+
+test("roll badge: waits briefly for the roll window to appear; shown even with the chat report off", function()
+  party()
+  ns.db.dropReport = false
+  S.rolls[9] = I.robe58
+  S.fire("START_LOOT_ROLL", 9)
+  ok(not ns.LootUI.Badge(1), "no roll window yet")
+  S.rollFrame(1, 9)
+  S.advance(0.2)
+  ok(ns.LootUI.Badge(1) and ns.LootUI.Badge(1):IsShown(), "found on retry")
+  eq(S.chatCount("new drop"), 0, "no chat report")
+end)
+
+test("tooltip lines: in a group, gear tooltips say who it suits and why not for others", function()
+  party()
+  local lines = S.hoverItem(GameTooltip, I.robe58)
+  eq(lines[1], "|cff40ff40AntiGrief: suits Me|r", "suits line")
+  ok(lines[2]:find("Bob: stats/effects (Intellect) don't suit a Warrior", 1, true), "misfit reason")
+  eq(#S.hoverItem(ItemRefTooltip, I.robe58), 2, "clicked item links too")
+  eq(#S.hoverItem({ lines = {}, AddLine = GameTooltip.AddLine }, I.robe58), 0, "comparison tooltips skipped")
+  ns.db.tooltip = false
+  eq(#S.hoverItem(GameTooltip, I.robe58), 0, "setting off")
+  ns.db.tooltip = true
+  S.SetGroup(S.units, nil)
+  eq(#S.hoverItem(GameTooltip, I.robe58), 0, "not in a group")
+end)
+
+-- Ignore list, friends and guild ------------------------------------------------
+
+test("ignore: /ag ignore <name> stops flags for that player; again undoes it; list", function()
+  party()
+  SlashCmdList.ANTIGRIEF("ignore Bob")
+  eq(S.chatCount("Bob won't be flagged"), 1, "confirmed")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  S.fire("CHAT_MSG_LOOT", WON("Bob", I.robe58))
+  eq(#ns.db.log, 0, "nothing logged for an ignored player")
+  SlashCmdList.ANTIGRIEF("ignore")
+  eq(S.chatCount("ignored: bob"), 1, "listed")
+  SlashCmdList.ANTIGRIEF("ignore bob")
+  eq(S.chatCount("bob will be flagged again"), 1, "undone (case-insensitive)")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(#ns.db.log, 1, "flagged again")
+end)
+
+test("friends and guildmates aren't flagged while skipFriends is on (default)", function()
+  party()
+  S.units.party1.guild = true
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.robe58))
+  eq(#ns.db.log, 0, "guildmate skipped")
+  S.units.party1.guild = false
+  S.friends[GUID.bob] = true
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
+  eq(#ns.db.log, 0, "friend skipped")
+  SlashCmdList.ANTIGRIEF("friends")
+  eq(ns.db.skipFriends, false, "toggled off")
+  S.fire("CHAT_MSG_LOOT", NEED("Bob", I.staminaSpellGloves))
+  eq(#ns.db.log, 1, "friend flagged with the option off")
+end)
+
+-- Level requirement severity ---------------------------------------------------
+
+test("level requirement: 1-2 levels short is Low, 3-5 Medium, more High", function()
+  local function sevFor(level)
+    local f = evaluate(I.plateChest, { name = "Bob", class = "WARRIOR", level = level })
+    for _, x in ipairs(f) do if x.text:find("requires level", 1, true) then return x.sev end end
+  end
+  local minLevel = select(5, ns.Data.GetItemInfo(I.plateChest))
+  eq(sevFor(minLevel - 1), 1, "1 short: Low"); eq(sevFor(minLevel - 2), 1, "2 short: Low")
+  eq(sevFor(minLevel - 3), 2, "3 short: Medium"); eq(sevFor(minLevel - 5), 2, "5 short: Medium")
+  eq(sevFor(minLevel - 6), 3, "6 short: High")
+  eq(sevFor(minLevel), nil, "at the level: no finding")
 end)
 
 test("minimap: dragging moves it round the edge and saves the angle", function()
@@ -2145,7 +2450,7 @@ test("minimap: /ag minimap and the options checkbox hide and show it", function(
   ok(not b:IsShown(), "hidden"); eq(ns.db.minimapButton, false, "saved")
   SlashCmdList.ANTIGRIEF("minimap")
   ok(b:IsShown(), "shown again")
-  eq(S.chatCount("/ag sound | screen | announce | pawn | minimap - toggle"), 0, "help not printed by toggling")
+  eq(S.chatCount("/ag sound | screen | announce | pawn | minimap | tooltip | badge | friends - toggle"), 0, "help not printed by toggling")
   -- The slash path must work on its own, without the options page relaying it
   local cfg = ns.Config
   ns.Config = nil
@@ -2182,7 +2487,7 @@ test("minimap: tooltip shows status and how to use it", function()
   eq(GameTooltip.lines[1], "AntiGrief", "title")
   local all = table.concat(GameTooltip.lines, "\n")
   ok(all:find("alerts at Medium+", 1, true), "status line")
-  ok(all:find("Click: Log or Settings", 1, true), "usage line")
+  ok(all:find("Click: menu (Log, Settings)", 1, true), "usage line")
   ok(GameTooltip.shown, "shown")
   b.scripts.OnLeave(b)
   ok(not GameTooltip.shown, "hidden on leave")
@@ -2212,7 +2517,7 @@ test("minimap: no minimap frame (UI replacement) -> no button, no error, addon w
   eq(S.chatCount("minimap button error"), 0, "no error")
   items(); party()
   S.fire("CHAT_MSG_LOOT", NEED("Bob", I.spellDagger))
-  eq(S.chatCount("rolled NEED"), 1, "alerts still work")
+  eq(S.chatCount("rolled Need on"), 1, "alerts still work")
 end)
 
 ---------------------------------------------------------------------------

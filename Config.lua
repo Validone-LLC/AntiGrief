@@ -64,8 +64,14 @@ local CONTROLS = {
     tooltip = "How many item levels below someone's current gear a drop can be before their Need is flagged as not an upgrade." },
   { key = "usePawn", kind = CHECKBOX, default = true, label = "Use Pawn scoring",
     tooltip = "If the Pawn addon is installed, use its scores instead of item level to judge upgrades." },
+  { key = "skipFriends", kind = CHECKBOX, default = true, label = "Don't flag friends or guildmates",
+    tooltip = "Never warn about Need rolls from your character friends or members of your guild. Use /ag ignore <name> for anyone else." },
+  { key = "tooltip", kind = CHECKBOX, default = true, label = "Item tooltip lines",
+    tooltip = "In a group, add who an item suits (and why it doesn't suit others) to item tooltips." },
+  { key = "lootBadge", kind = CHECKBOX, default = true, label = "Badge on the roll window",
+    tooltip = "When an item drops, show who it fits in a small label under the loot roll window." },
   { key = "minimapButton", kind = CHECKBOX, default = true, label = "Show minimap button",
-    tooltip = "Show the AG button on the minimap. Click it for the log or these settings; drag it to move it.",
+    tooltip = "Show the AG button on the minimap. Click it for the log or these settings; drag it to move it. AntiGrief is also in the AddOns menu by the minimap.",
     onChange = function()
       if ns.MinimapButton and ns.MinimapButton.Refresh then ns.MinimapButton.Refresh() end
     end },

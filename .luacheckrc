@@ -11,7 +11,9 @@ globals = {
   "SLASH_ANTIGRIEF1",
   "SLASH_ANTIGRIEF2",
   "SlashCmdList",
-  "StaticPopupDialogs", -- the ANTIGRIEF_FEEDBACK dialog is added to it
+  "UISpecialFrames", -- our window names are added so Escape closes them
+  -- addon compartment (AddOns menu) handlers, named in the TOC
+  "AntiGrief_OnAddonCompartmentClick", "AntiGrief_OnAddonCompartmentEnter", "AntiGrief_OnAddonCompartmentLeave",
 }
 
 -- WoW API and global strings the addon reads
@@ -30,7 +32,9 @@ read_globals = {
   "GetSpecialization", "GetSpecializationInfo", "GetSpecializationInfoByID", "GetInspectSpecialization",
   -- UI, chat, sound
   "CreateFrame", "DEFAULT_CHAT_FRAME", "Minimap", "GetMinimapShape", "GetCursorPosition", "GameTooltip", "MenuUtil", "GetChatWindowInfo", "FCF_OpenNewWindow", "FCF_SelectDockFrame", "NUM_CHAT_WINDOWS", "Constants","RaidNotice_AddMessage", "RaidWarningFrame", "ChatTypeInfo",
-  "StaticPopup_Show", "CLOSE",
+  "CLOSE", "UIParent", "IsShiftKeyDown", "ChatFontNormal", "GameFontHighlightSmall",
+  "TooltipDataProcessor", "ItemRefTooltip",
+  "C_FriendList", "UnitIsInMyGuild", "UnitAffectingCombat", "GetInstanceInfo",
   "PlaySound", "SOUNDKIT", "SendChatMessage", "LE_PARTY_CATEGORY_INSTANCE",
   -- misc
   "GetTime", "GetLocale", "issecretvalue", "wipe", "date", "time", "geterrorhandler",

@@ -10,3 +10,4 @@ desktop.ini
 # Packaging output
 *.zip
 dist/
+release/

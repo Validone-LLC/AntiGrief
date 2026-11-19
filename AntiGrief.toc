@@ -6,6 +6,10 @@
 ## SavedVariables: AntiGriefDB
 ## OptionalDeps: Pawn
 ## Category: Group & Loot
+## IconTexture: Interface/AddOns/AntiGrief/media/minimap
+## AddonCompartmentFunc: AntiGrief_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: AntiGrief_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: AntiGrief_OnAddonCompartmentLeave
 
 Data.lua
 Inspect.lua
@@ -13,4 +17,6 @@ Rules.lua
 Pawn.lua
 Config.lua
 Minimap.lua
+LogWindow.lua
+LootUI.lua
 AntiGrief.lua

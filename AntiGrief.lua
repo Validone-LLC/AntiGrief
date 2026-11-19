@@ -7,6 +7,7 @@ local DEFAULTS = {
   enabled = true, minSeverity = 2, sound = true, screen = true,
   announce = false, dropReport = true, upgradeMargin = 8, usePawn = true, log = {},
   minimapButton = true, minimapAngle = 225,
+  ignore = {}, skipFriends = true, tooltip = true, lootBadge = true,
 }
 -- Keys from older versions, removed from the saved settings on load.
 -- `hints` (off by default) was replaced by `dropReport` (on by default).
@@ -19,8 +20,12 @@ local RESCAN_GAP    = 30  -- UNIT_INVENTORY_CHANGED re-scan at most this often
 local DROP_REPORT_MAX = 10   -- drop report: above this many members, collapse; cap on "doesn't fit" lines
 local ROLL_MEMORY     = 900  -- seconds a reported rollID is remembered (rolls last minutes)
 local MARGIN_MIN, MARGIN_MAX = 0, 30 -- upgradeMargin range; matches the options slider
-local EQUIP_CHECK_DELAY = 15  -- seconds after a flagged Need win before checking the winner's gear
-local EQUIP_CHECK_WAIT  = 120 -- then wait this long for a fresh inspect (range, combat) before giving up
+local EQUIP_CHECK_DELAY   = 15  -- seconds after a flagged Need win before the first look at the winner's gear
+local EQUIP_CHECK_WAIT    = 120 -- wait this long for a fresh inspect (range, combat) before calling it unknown
+local EQUIP_RECHECK_AFTER = 120 -- second look no sooner than this after the win, and out of combat
+local EQUIP_COMBAT_WAIT   = 600 -- ...or this long after the win even if the fighting goes on
+local EQUIP_POLL          = 5   -- how often to see whether the second look is due
+local ANNOUNCE_GAP        = 30  -- at most one group announcement this often
 
 local PREFIX = "|cff40c0ffAntiGrief|r: "
 -- Chat window names (case-insensitive, trimmed). A tab named "AntiGrief"
@@ -67,7 +72,6 @@ local function Mirror(text)
   if tab and tab ~= (OutputFrame()) then tab:AddMessage(text) end
 end
 local function Report(msg) Print(msg); Mirror(PREFIX .. msg) end
-local function ReportLine(msg) Line(msg); Mirror("   " .. msg) end
 
 local function Short(name)
   if type(name) ~= "string" then return "?" end
@@ -89,6 +93,10 @@ end
 local function ConfigCall(method, ...) return ModuleCall("options panel", ns.Config, method, ...) end
 -- Same for the minimap button (Minimap.lua)
 local function ButtonCall(method, ...) return ModuleCall("minimap button", ns.MinimapButton, method, ...) end
+-- And for the log window (LogWindow.lua) and the loot-roll badges and item
+-- tooltip lines (LootUI.lua)
+local function WindowCall(method, ...) return ModuleCall("log window", ns.LogWindow, method, ...) end
+local function LootUICall(method, ...) return ModuleCall("loot display", ns.LootUI, method, ...) end
 
 -- Tell the options panel (if any) that a setting changed outside it
 local function Changed(key)
@@ -113,10 +121,11 @@ local NEED_PATTERNS = {}
 -- Greed/Disenchant/Transmog wins aren't parsed: they're never judged.
 local WIN_PATTERNS = {}
 local YOU_WON_PATTERN -- "You won: %s": the player's own win, which the "%s won:" pattern would also match
+-- { global string key, the line says Need, the Need was Off-Spec }
 local WIN_KEYS = {
-  { "LOOT_ROLL_WON", false },                       -- "%s won: %s" (default, showLootSpam 1)
-  { "LOOT_ROLL_WON_NO_SPAM_NEED", true },           -- "%s (Need - %d, Main-Spec) Won: %s"
-  { "LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC", true },  -- "%s (Need - %d, Off-Spec) Won: %s"
+  { "LOOT_ROLL_WON", false, false },                      -- "%s won: %s" (default, showLootSpam 1)
+  { "LOOT_ROLL_WON_NO_SPAM_NEED", true, false },          -- "%s (Need - %d, Main-Spec) Won: %s"
+  { "LOOT_ROLL_WON_NO_SPAM_NEED_OFF_SPEC", true, true },  -- "%s (Need - %d, Off-Spec) Won: %s"
 }
 local LINK_TOKEN = "\001" -- stands in for the item link while matching
 
@@ -171,7 +180,7 @@ local function InitPatterns()
   for i = #WIN_PATTERNS, 1, -1 do WIN_PATTERNS[i] = nil end
   for _, k in ipairs(WIN_KEYS) do
     local p = BuildPattern(_G[ k[1] ])
-    if p then WIN_PATTERNS[#WIN_PATTERNS + 1] = { pat = p, need = k[2] } end
+    if p then WIN_PATTERNS[#WIN_PATTERNS + 1] = { pat = p, need = k[2], offSpec = k[3] } end
   end
   YOU_WON_PATTERN = BuildPattern(LOOT_ROLL_YOU_WON)
   table.sort(WIN_PATTERNS, function(a, b) return #a.pat > #b.pat end)
@@ -225,7 +234,8 @@ local function ParseNeed(msg)
   return name, link
 end
 
--- "Bob won: [item]" -> "Bob", link, saysNeed (true when the line itself says Need)
+-- "Bob won: [item]" -> "Bob", link, saysNeed (true when the line itself says
+-- Need), offSpec (true when it says Off-Spec)
 local function WinPat(e) return e.pat end
 local function ParseWin(msg)
   if YOU_WON_PATTERN then
@@ -233,7 +243,7 @@ local function ParseWin(msg)
     if link and (msg:sub(1, ls - 1) .. LINK_TOKEN .. msg:sub(le + 1)):match(YOU_WON_PATTERN) then return nil end
   end
   local name, link, i = MatchNameAndLink(msg, WIN_PATTERNS, WinPat)
-  if name then return name, link, WIN_PATTERNS[i].need end
+  if name then return name, link, WIN_PATTERNS[i].need, WIN_PATTERNS[i].offSpec end
 end
 
 -- Full-name match wins over a short-name match anywhere in the group
@@ -252,13 +262,122 @@ local function UnitByName(name)
 end
 
 ---------------------------------------------------------------------------
+-- Shared helpers for flags: names, ignore list, run counts, log, output
+---------------------------------------------------------------------------
+local GREY_COLOR = "ff999999"
+local ALERT_ICON = "|TInterface\\DialogFrame\\UI-Dialog-Icon-AlertNew:0|t "
+
+local function ItemKey(link) return link:match("|H(item:[^|]+)") or link end
+local function NameKey(name) return Short(name):lower() end
+local function ItemID(link) return type(link) == "string" and tonumber(link:match("item:(%d+)")) or nil end
+
+-- Calls an API that may be missing, error, or return a secret value; nil then
+local function SafeCall(fn, ...)
+  if type(fn) ~= "function" then return nil end
+  local ok, res = pcall(fn, ...)
+  if not ok or (issecretvalue and issecretvalue(res)) then return nil end
+  return res
+end
+
+-- Never flagged: names on the ignore list (/ag ignore), and with skipFriends
+-- on, character friends and guildmates
+local function IsIgnored(unit, name)
+  if type(ns.db.ignore) == "table" and name and ns.db.ignore[NameKey(name)] then return true end
+  if not ns.db.skipFriends or not unit then return false end
+  local guid = ns.GUID(unit)
+  if guid and C_FriendList and SafeCall(C_FriendList.IsFriend, guid) then return true end
+  if SafeCall(UnitIsInMyGuild, unit) then return true end
+  return false
+end
+
+-- Flagged Needs per player this run: since joining the group or entering a
+-- new instance (see the events at the end of the file)
+local runFlags = {} -- short lowercase name -> count
+local runNames = {} -- short lowercase name -> name as shown
+local runInstance   -- instance ID the current run started in
+local function ResetRun() wipe(runFlags); wipe(runNames) end
+local function CountFlag(name)
+  local k = NameKey(name or "?")
+  runFlags[k] = (runFlags[k] or 0) + 1
+  runNames[k] = Short(name or "?")
+  return runFlags[k]
+end
+
+local function Ordinal(n)
+  local tens = n % 100
+  local suffix = (tens >= 11 and tens <= 13) and "th" or ({ "st", "nd", "rd" })[n % 10] or "th"
+  return n .. suffix
+end
+
+local function SortFindings(findings) table.sort(findings, function(a, b) return a.sev > b.sev end) end
+local function Texts(findings)
+  local t = {}
+  for i, f in ipairs(findings) do t[i] = f.text end
+  return t
+end
+
+-- Adds a flag to the saved log (newest first) and redraws an open log window
+local function AddLog(entry)
+  if type(ns.db.log) ~= "table" then ns.db.log = {} end
+  entry.t = time()
+  table.insert(ns.db.log, 1, entry)
+  while #ns.db.log > LOG_MAX do table.remove(ns.db.log) end
+  WindowCall("Refresh")
+end
+
+-- One-line alert: icon, name, what happened (`action` has a %s for the item
+-- link), the top reason and severity, then grey notes. An item link inside
+-- the reason ends with |r, so the colour is resumed after it.
+local function FlagLine(name, action, link, findings, sev, notes)
+  local color = D.SEV_COLOR[sev] or GREY_COLOR
+  local more = #findings - 1
+  if more > 0 then
+    notes[#notes + 1] = ("+%d more %s: /ag log"):format(more, more == 1 and "reason" or "reasons")
+  end
+  local line = ("%s|c%s%s|r %s: |c%s%s (%s)|r"):format(ALERT_ICON, color, Short(name), action:format(link),
+    color, (findings[1].text:gsub("|r", "|r|c" .. color)), D.SEV_NAME[sev] or "?")
+  if #notes > 0 then line = line .. (" |c%s- %s|r"):format(GREY_COLOR, table.concat(notes, ", ")) end
+  return line
+end
+
+local function Banner(text)
+  if not ns.db.screen then return end
+  local color = (ChatTypeInfo and ChatTypeInfo.RAID_WARNING) or { r = 1, g = 0.28, b = 0 }
+  D.ShowBanner(text, color)
+end
+
+local function AlertSound()
+  if ns.db.sound and PlaySound then
+    pcall(PlaySound, (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959, "Master")
+  end
+end
+
+-- Group announcements, rate-limited: each player+item once per ROLL_MEMORY,
+-- and at most one message every ANNOUNCE_GAP seconds
+local announced, lastAnnounce = {}, nil
+local function Announce(key, text)
+  if not ns.db.announce then return end
+  -- A send blocked by chat lockdown isn't an error pcall can catch, so check first
+  local lockdown = C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()
+  if lockdown then return end
+  local now = GetTime()
+  PruneOlder(announced, now, ROLL_MEMORY)
+  if announced[key] or (lastAnnounce and now - lastAnnounce < ANNOUNCE_GAP) then return end
+  local inInstance = LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE)
+  local channel = (inInstance and "INSTANCE_CHAT") or (IsInRaid() and "RAID") or "PARTY"
+  local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+  if send and pcall(send, text, channel) then
+    announced[key], lastAnnounce = now, now
+  end
+end
+
+---------------------------------------------------------------------------
 -- Alerts
 ---------------------------------------------------------------------------
 local recent = {}
 
 local function DedupeKey(who, link)
-  local item = link:match("|H(item:[^|]+)") or link
-  return (who.guid or who.name or "?") .. "|" .. item
+  return (who.guid or who.name or "?") .. "|" .. ItemKey(link)
 end
 
 -- Logs a misfit Need (any severity) and, when `notify` (at or above the
@@ -272,44 +391,32 @@ local function Alert(who, link, findings, maxSev, itemNotLoaded, notify)
   if recent[key] then return end
   recent[key] = now
 
-  table.sort(findings, function(a, b) return a.sev > b.sev end)
-  if type(ns.db.log) ~= "table" then ns.db.log = {} end
-  local log = ns.db.log
-  table.insert(log, 1, { t = time(), who = who.name or "?", class = who.class, item = link, sev = maxSev, why = findings[1].text })
-  while #log > LOG_MAX do table.remove(log) end
+  SortFindings(findings)
+  local count = CountFlag(who.name)
+  AddLog({ who = who.name or "?", class = who.class, item = link, sev = maxSev,
+    why = findings[1].text, reasons = Texts(findings), run = count })
   if not notify then return end
 
-  local short = Short(who.name)
-  Report(("|c%s%s|r rolled NEED on %s - may be griefing loot"):format(D.SEV_COLOR[maxSev], short, link))
-  for _, f in ipairs(findings) do
-    ReportLine(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
-  end
-  if itemNotLoaded then ReportLine("|cff999999(item info not loaded; only type checks ran)|r") end
-  if not who.items then ReportLine("|cff999999(gear not scanned yet; upgrade check skipped)|r") end
+  local notes = {}
+  if count > 1 then notes[#notes + 1] = Ordinal(count) .. " flag this run" end
+  if itemNotLoaded then notes[#notes + 1] = "item info not loaded" end
+  if not who.items then notes[#notes + 1] = "gear not scanned" end
+  Report(FlagLine(who.name, "rolled Need on %s", link, findings, maxSev, notes))
 
-  if ns.db.screen then
-    local color = (ChatTypeInfo and ChatTypeInfo.RAID_WARNING) or { r = 1, g = 0.28, b = 0 }
-    D.ShowBanner(("AntiGrief: %s may be griefing %s"):format(short, link), color)
+  local short = Short(who.name)
+  if count > 1 then
+    Banner(("AntiGrief: %s's %s flagged Need this run - %s"):format(short, Ordinal(count), link))
+  else
+    Banner(("AntiGrief: %s's Need on %s doesn't fit"):format(short, link))
   end
-  if ns.db.sound and PlaySound then
-    pcall(PlaySound, (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959, "Master")
-  end
-  -- A send blocked by chat lockdown isn't an error pcall can catch, so check first
-  local lockdown = C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()
-  if ns.db.announce and not lockdown then
-    local inInstance = LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE)
-    local channel = (inInstance and "INSTANCE_CHAT") or (IsInRaid() and "RAID") or "PARTY"
-    local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
-    if send then
-      pcall(send, ("[AntiGrief] %s's Need on %s doesn't look like a fit: %s"):format(short, link, findings[1].text), channel)
-    end
-  end
+  AlertSound()
+  Announce(key, ("[AntiGrief] %s's Need on %s doesn't look like a fit: %s"):format(short, link, findings[1].text))
 end
 
 local function Judge(name, link, attempt)
   if not ns.db or not ns.db.enabled then return end
   local unit = UnitByName(name)
-  if not unit or UnitIsUnit(unit, "player") then return end
+  if not unit or UnitIsUnit(unit, "player") or IsIgnored(unit, name) then return end
   attempt = attempt or 0
   if not D.GetItemInfo(link) and attempt < LOAD_RETRIES then -- not cached yet
     local itemID = D.GetItemInfoInstant(link)
@@ -332,9 +439,6 @@ end
 ---------------------------------------------------------------------------
 -- itemString -> { [short lowercase name] = GetTime() of their Need }
 local needed = {}
-
-local function ItemKey(link) return link:match("|H(item:[^|]+)") or link end
-local function NameKey(name) return Short(name):lower() end
 
 local function RememberNeed(name, link)
   local key = ItemKey(link)
@@ -361,34 +465,25 @@ local function PruneNeeded(now)
 end
 
 -- Logs a misfit Need win (any severity); prints it when `notify`
-local function LogWin(who, link, findings, maxSev, notify)
-  table.sort(findings, function(a, b) return a.sev > b.sev end)
-  if type(ns.db.log) ~= "table" then ns.db.log = {} end
-  local log = ns.db.log
-  table.insert(log, 1, { t = time(), kind = "won", who = who.name or "?", class = who.class, item = link,
-    sev = maxSev, why = findings[1].text })
-  while #log > LOG_MAX do table.remove(log) end
+local function LogWin(who, link, findings, maxSev, notify, offSpec)
+  SortFindings(findings)
+  AddLog({ kind = "won", who = who.name or "?", class = who.class, item = link, sev = maxSev,
+    why = findings[1].text, reasons = Texts(findings), offSpec = offSpec or nil })
   if not notify then return end
-  Report(("|c%s%s|r won %s with Need - doesn't look like a fit"):format(D.SEV_COLOR[maxSev], Short(who.name), link))
-  for _, f in ipairs(findings) do
-    ReportLine(("|c%s[%s]|r %s"):format(D.SEV_COLOR[f.sev], D.SEV_NAME[f.sev], f.text))
-  end
+  local notes = {}
+  if offSpec then notes[1] = "off-spec Need, one severity lower" end
+  Report(FlagLine(who.name, "won %s with Need", link, findings, maxSev, notes))
 end
 
--- Judge a confirmed Need win: any misfit is logged, printed at the alert threshold
 ---------------------------------------------------------------------------
--- Equip check: EQUIP_CHECK_DELAY s after a flagged Need win, re-inspect the
--- winner and log whether they're wearing the item. Not wearing it is alerted
--- (at the alert threshold); wearing it, or no inspect in time, is only logged.
+-- Equip check: after a flagged Main-Spec Need win, look at the winner's gear
+-- twice. First EQUIP_CHECK_DELAY s after the win; if the item isn't on
+-- (or they couldn't be inspected), again once EQUIP_RECHECK_AFTER s have
+-- passed and neither of you is in combat (people equip after the pull).
+-- Only the second look's "not wearing it" is alerted (at the alert
+-- threshold); every final result is logged.
 ---------------------------------------------------------------------------
-local EQUIP_TEXT = {
-  no      = "hasn't equipped it %d s after winning",
-  yes     = "equipped it",
-  unknown = "couldn't be checked (out of inspect range, offline or left)",
-}
 local equipChecks = {} -- guid -> list of checks waiting for a fresh inspect
-
-local function ItemID(link) return type(link) == "string" and tonumber(link:match("item:(%d+)")) or nil end
 
 local function Wears(entry, itemID)
   for _, id in pairs(entry.ids or {}) do if id == itemID then return true end end
@@ -396,24 +491,22 @@ local function Wears(entry, itemID)
   return false
 end
 
+local function Duration(s)
+  s = math.floor(s + 0.5)
+  if s < 90 then return s .. " s" end
+  return math.floor(s / 60 + 0.5) .. " min"
+end
+
 local function LogEquip(c, result)
   if not ns.db or not ns.db.enabled then return end
-  if type(ns.db.log) ~= "table" then ns.db.log = {} end
-  local log = ns.db.log
-  table.insert(log, 1, { t = time(), kind = "equip", who = c.name or "?", class = c.class, item = c.link,
-    sev = c.sev, equip = result })
-  while #log > LOG_MAX do table.remove(log) end
+  local after = math.floor(GetTime() - c.wonAt + 0.5)
+  AddLog({ kind = "equip", who = c.name or "?", class = c.class, item = c.link, sev = c.sev,
+    equip = result, after = after })
   if result ~= "no" or not c.notify then return end
-  local short = Short(c.name)
-  Report(("|c%s%s|r hasn't equipped %s %d s after winning it with Need"):format(
-    D.SEV_COLOR[c.sev] or "ffff4040", short, c.link, EQUIP_CHECK_DELAY))
-  if ns.db.screen then
-    local color = (ChatTypeInfo and ChatTypeInfo.RAID_WARNING) or { r = 1, g = 0.28, b = 0 }
-    D.ShowBanner(("AntiGrief: %s won %s but hasn't equipped it"):format(short, c.link), color)
-  end
-  if ns.db.sound and PlaySound then
-    pcall(PlaySound, (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959, "Master")
-  end
+  Report(FlagLine(c.name, "hasn't equipped %s " .. Duration(after) .. " after winning it with Need", c.link,
+    { { sev = c.sev, text = "not in any equipped slot" } }, c.sev, {}))
+  Banner(("AntiGrief: %s won %s but hasn't equipped it"):format(Short(c.name), c.link))
+  AlertSound()
 end
 
 local function TakeCheck(guid, c)
@@ -429,6 +522,31 @@ local function TakeCheck(guid, c)
   return false
 end
 
+local StartEquipCheck -- forward: Settle and StartEquipCheck call each other
+
+-- Waits (polling) until the second look is due, then starts it
+local function SecondLook(c)
+  if not ns.db or not ns.db.enabled then return end
+  local unit = ns.UnitForGUID(c.guid)
+  if not unit then LogEquip(c, "unknown"); return end -- left the group
+  local since = GetTime() - c.wonAt
+  local fighting = (InCombatLockdown and InCombatLockdown()) or SafeCall(UnitAffectingCombat, unit)
+  if since >= EQUIP_COMBAT_WAIT or (since >= EQUIP_RECHECK_AFTER and not fighting) then
+    StartEquipCheck(c)
+  else
+    C_Timer.After(EQUIP_POLL, function() SecondLook(c) end)
+  end
+end
+
+local function Settle(c, result)
+  if result == "yes" or c.stage >= 2 then
+    LogEquip(c, result)
+  else
+    c.stage = 2
+    SecondLook(c)
+  end
+end
+
 -- Inspect.onScan: settle every check on this player that the scan is fresh enough for
 local function OnScan(guid, entry)
   local list = equipChecks[guid]
@@ -437,14 +555,14 @@ local function OnScan(guid, entry)
     local c = list[i]
     if entry.time >= c.after then
       table.remove(list, i)
-      LogEquip(c, Wears(entry, c.itemID) and "yes" or "no")
+      Settle(c, Wears(entry, c.itemID) and "yes" or "no")
     end
   end
   if #list == 0 then equipChecks[guid] = nil end
 end
 Inspect.onScan = OnScan
 
-local function StartEquipCheck(c)
+function StartEquipCheck(c)
   if not ns.db or not ns.db.enabled then return end
   -- Already seen wearing it since the win (e.g. the re-scan on equip): done
   local cached = Inspect.cache[c.guid]
@@ -457,7 +575,7 @@ local function StartEquipCheck(c)
   table.insert(equipChecks[c.guid], c)
   Inspect.Queue(c.guid, true)
   C_Timer.After(EQUIP_CHECK_WAIT, function()
-    if TakeCheck(c.guid, c) then LogEquip(c, "unknown") end
+    if TakeCheck(c.guid, c) then Settle(c, "unknown") end
   end)
 end
 
@@ -465,34 +583,38 @@ local function ScheduleEquipCheck(who, link, maxSev, notify)
   local itemID = ItemID(link)
   if not who.guid or not itemID or not (C_Timer and C_Timer.After) then return end
   local c = { guid = who.guid, name = who.name, class = who.class, link = link, itemID = itemID,
-              sev = maxSev, notify = notify, wonAt = GetTime() }
+              sev = maxSev, notify = notify, wonAt = GetTime(), stage = 1 }
   C_Timer.After(EQUIP_CHECK_DELAY, function() StartEquipCheck(c) end)
 end
 
-local function JudgeWin(name, link, attempt)
+-- Judge a confirmed Need win: any misfit is logged, printed at the alert
+-- threshold. An Off-Spec Need counts one severity lower (never below Low)
+-- and isn't equip-checked: off-spec gear is often kept in the bags.
+local function JudgeWin(name, link, offSpec, attempt)
   if not ns.db or not ns.db.enabled then return end
   local unit = UnitByName(name)
-  if not unit or UnitIsUnit(unit, "player") then return end
+  if not unit or UnitIsUnit(unit, "player") or IsIgnored(unit, name) then return end
   attempt = attempt or 0
   if not D.GetItemInfo(link) and attempt < LOAD_RETRIES then
-    C_Timer.After(1, function() JudgeWin(name, link, attempt + 1) end)
+    C_Timer.After(1, function() JudgeWin(name, link, offSpec, attempt + 1) end)
     return
   end
   local who = Inspect.Who(unit)
   if not who then return end
   local findings, maxSev = Rules.Evaluate(link, who)
   if findings and #findings > 0 and D.SEV_COLOR[maxSev] then
+    if offSpec then maxSev = math.max(D.LOW, maxSev - 1) end
     local notify = maxSev >= (ns.db.minSeverity or 2)
-    LogWin(who, link, findings, maxSev, notify)
-    ScheduleEquipCheck(who, link, maxSev, notify)
+    LogWin(who, link, findings, maxSev, notify, offSpec)
+    if not offSpec then ScheduleEquipCheck(who, link, maxSev, notify) end
   end
 end
 
-local function OnWin(name, link, saysNeed)
+local function OnWin(name, link, saysNeed, offSpec)
   -- Need-only: the default "won:" line has no roll type, so it counts only if
   -- we saw this player's Need on the item; the no-spam Need lines say it.
   local rolledNeed = TakeNeed(name, link)
-  if saysNeed or rolledNeed then JudgeWin(name, link) end
+  if saysNeed or rolledNeed then JudgeWin(name, link, offSpec) end
 end
 
 local function OnLootMessage(msg)
@@ -506,15 +628,14 @@ local function OnLootMessage(msg)
     Judge(name, link)
     return
   end
-  local okWin, wname, wlink, saysNeed = pcall(ParseWin, msg)
-  if okWin and wname and wlink then OnWin(wname, wlink, saysNeed) end
+  local okWin, wname, wlink, saysNeed, offSpec = pcall(ParseWin, msg)
+  if okWin and wname and wlink then OnWin(wname, wlink, saysNeed, offSpec) end
 end
 
 ---------------------------------------------------------------------------
 -- Group verdicts: shared by /ag test and the drop report
 ---------------------------------------------------------------------------
 local FIT_COLOR  = "ff40ff40"
-local GREY_COLOR = "ff999999"
 
 -- Inspect.Who returns a fresh table; replacing `items` (not mutating it)
 -- keeps the inspect cache untouched. The player is judged on the gear
@@ -601,9 +722,15 @@ local function PrintDropReport(link, results)
   end
 end
 
+local function WantsDropInfo()
+  return ns.db and ns.db.enabled and (ns.db.dropReport or ns.db.lootBadge)
+end
+
+-- Judges a new drop for the group: the chat report (dropReport) and the
+-- badge on the roll window (lootBadge, LootUI.lua)
 local function DropReport(rollID, link, attempt)
   -- re-checked on every retry: settings may change and the roll may be reported
-  if not ns.db or not ns.db.enabled or not ns.db.dropReport then return end
+  if not WantsDropInfo() then return end
   if reportedRolls[rollID] then return end
   if not D.GetItemInfo(link) then -- not cached yet
     if attempt >= LOAD_RETRIES then return end -- never loaded: say nothing
@@ -617,17 +744,21 @@ local function DropReport(rollID, link, attempt)
   local now = GetTime()
   PruneOlder(reportedRolls, now, ROLL_MEMORY)
   reportedRolls[rollID] = now
-  PrintDropReport(link, results)
+  if ns.db.dropReport then PrintDropReport(link, results) end
+  if ns.db.lootBadge then LootUICall("ShowBadge", rollID, link, results) end
 end
 
 local function OnStartLootRoll(rollID)
-  if not ns.db or not ns.db.enabled or not ns.db.dropReport or not GetLootRollItemLink then return end
+  if not WantsDropInfo() or not GetLootRollItemLink then return end
   if rollID == nil or (issecretvalue and issecretvalue(rollID)) then return end
   if reportedRolls[rollID] then return end
   local ok, link = pcall(GetLootRollItemLink, rollID)
   if not ok or type(link) ~= "string" or (issecretvalue and issecretvalue(link)) then return end
   DropReport(rollID, link, 0)
 end
+
+-- Shared with LootUI.lua (badges, tooltip lines)
+ns.EvaluateGroup, ns.Fits, ns.TopFinding, ns.Short = EvaluateGroup, Fits, TopFinding, Short
 
 local lastRescan = {}
 local function RescanSoon(guid)
@@ -659,9 +790,10 @@ local HELP = {
   "/ag sev 1-3 - alert threshold (1 Low, 2 Medium, 3 High)",
   "/ag margin 0-30 - item-level gap for the upgrade check",
   "/ag drops - toggle the fit report on new drops (alias: hints)",
-  "/ag sound | screen | announce | pawn | minimap - toggle",
-  "/ag history - open the AG Logs chat tab with the full flag history",
-  "/ag log | clear - show recent flags here, or clear the log history",
+  "/ag sound | screen | announce | pawn | minimap | tooltip | badge | friends - toggle",
+  "/ag ignore <name> - never flag this player (again to undo); /ag ignore lists them",
+  "/ag log - open the log window (filters, per-player totals)",
+  "/ag history | clear - full history in an AG Logs chat tab, or clear the log",
   "/ag feedback - Discord link for feedback and bug reports",
   "Tip: a chat tab named AntiGrief receives all AntiGrief messages; AG Logs gets a copy of each flag",
 }
@@ -672,8 +804,13 @@ local HELP = {
 --      - Cy is Low: <reason>
 --      -- Bob won and is High for: <reason>   (WIN_COLOR)
 local WIN_COLOR = "ffff66ff"
---      --- Bob hasn't equipped it 15 s after winning   (red; green if he did)
+--      --- Bob hasn't equipped it 2 min after winning   (red; green if he did)
 local EQUIP_COLOR = { no = "ffff4040", yes = "ff40ff40" }
+local EQUIP_TEXT = {
+  no      = "hasn't equipped it %s after winning",
+  yes     = "equipped it",
+  unknown = "couldn't be checked (out of inspect range, offline or left)",
+}
 
 -- Groups log entries (stored newest first) into drops, oldest first. Entries
 -- for the same item within ROLL_MEMORY of the drop's first entry are one drop.
@@ -694,24 +831,33 @@ local function GroupDrops(log)
   return drops
 end
 
+local function DropHeader(d)
+  local when = (type(d.t) == "number" and date) and date("%m/%d %H:%M", d.t) or "?"
+  return ("%s  %s"):format(when, tostring(d.item))
+end
+
+-- One history line for a log entry. `full` lists every reason, not just the top one.
+local function EntryLine(e, full)
+  if e.kind == "equip" then
+    local text = (EQUIP_TEXT[e.equip] or EQUIP_TEXT.unknown):format(Duration(tonumber(e.after) or EQUIP_CHECK_DELAY))
+    return ("   |c%s--- %s %s|r"):format(EQUIP_COLOR[e.equip] or GREY_COLOR, Short(e.who), text)
+  end
+  local why = e.why or ""
+  if full and type(e.reasons) == "table" and #e.reasons > 1 then why = table.concat(e.reasons, "; ") end
+  if e.kind == "won" then
+    return ("   |c%s-- %s won and is %s for: %s%s|r"):format(WIN_COLOR, Short(e.who),
+      D.SEV_NAME[e.sev] or "?", why, e.offSpec and " (off-spec Need)" or "")
+  end
+  local run = tonumber(e.run) or 0
+  return ("   |c%s- %s is %s: %s%s|r"):format(D.SEV_COLOR[e.sev] or GREY_COLOR, Short(e.who),
+    D.SEV_NAME[e.sev] or "?", why, run > 1 and (" (%s flag this run)"):format(Ordinal(run)) or "")
+end
+
 -- Appends the chat lines for one drop to `out`
 local function DropLines(d, out)
-  local when = (type(d.t) == "number" and date) and date("%m/%d %H:%M", d.t) or "?"
-  out[#out + 1] = ("%s  %s"):format(when, tostring(d.item))
-  for _, e in ipairs(d.needs) do
-    out[#out + 1] = ("   |c%s- %s is %s: %s|r"):format(D.SEV_COLOR[e.sev] or GREY_COLOR,
-      Short(e.who), D.SEV_NAME[e.sev] or "?", e.why or "")
-  end
-  for _, e in ipairs(d.wins) do
-    if e.kind == "equip" then
-      local text = EQUIP_TEXT[e.equip] or EQUIP_TEXT.unknown
-      out[#out + 1] = ("   |c%s--- %s %s|r"):format(EQUIP_COLOR[e.equip] or GREY_COLOR,
-        Short(e.who), text:format(EQUIP_CHECK_DELAY))
-    else
-      out[#out + 1] = ("   |c%s-- %s won and is %s for: %s|r"):format(WIN_COLOR,
-        Short(e.who), D.SEV_NAME[e.sev] or "?", e.why or "")
-    end
-  end
+  out[#out + 1] = DropHeader(d)
+  for _, e in ipairs(d.needs) do out[#out + 1] = EntryLine(e) end
+  for _, e in ipairs(d.wins) do out[#out + 1] = EntryLine(e) end
 end
 
 -- Lines for the last `maxDrops` drops (all if nil), oldest first, with a
@@ -725,6 +871,54 @@ local function HistoryLines(maxDrops)
   end
   return out, #drops
 end
+
+-- For the log window: the history filtered by `f` = { player = name
+-- substring, minSev = 1-3, winsOnly = bool }, every reason listed. Returns
+-- lines (oldest first) and per-player totals, most flagged first:
+-- { name, needs, wins, unworn }.
+local function FilteredHistory(f)
+  f = f or {}
+  local needle = (type(f.player) == "string" and f.player ~= "") and f.player:lower() or nil
+  local function keep(e)
+    if needle and not Short(e.who or ""):lower():find(needle, 1, true) then return false end
+    if f.minSev and (tonumber(e.sev) or 0) < f.minSev then return false end
+    if f.winsOnly and e.kind ~= "won" and e.kind ~= "equip" then return false end
+    return true
+  end
+  local out, byName, totals = {}, {}, {}
+  for _, d in ipairs(GroupDrops(ns.db.log)) do
+    local block = {}
+    for _, list in ipairs({ d.needs, d.wins }) do
+      for _, e in ipairs(list) do
+        if keep(e) then
+          block[#block + 1] = EntryLine(e, true)
+          local name = Short(e.who or "?")
+          local t = byName[name]
+          if not t then
+            t = { name = name, needs = 0, wins = 0, unworn = 0 }
+            byName[name] = t
+            totals[#totals + 1] = t
+          end
+          if e.kind == "won" then t.wins = t.wins + 1
+          elseif e.kind == "equip" then if e.equip == "no" then t.unworn = t.unworn + 1 end
+          else t.needs = t.needs + 1 end
+        end
+      end
+    end
+    if #block > 0 then
+      if #out > 0 then out[#out + 1] = " " end
+      out[#out + 1] = DropHeader(d)
+      for _, l in ipairs(block) do out[#out + 1] = l end
+    end
+  end
+  table.sort(totals, function(a, b)
+    local na, nb = a.needs + a.wins + a.unworn, b.needs + b.wins + b.unworn
+    if na ~= nb then return na > nb end
+    return a.name < b.name
+  end)
+  return out, totals
+end
+ns.FilteredHistory = FilteredHistory
 
 local RECENT_DROPS = 5 -- /ag log and the no-tab fallback show this many
 
@@ -758,48 +952,72 @@ local function ShowHistory()
   for _, l in ipairs(lines) do frame:AddMessage(l) end
 end
 
--- Feedback: a popup with the Discord invite in a pre-selected edit box, so
--- the player can Ctrl+C it (chat links can't be copied). Falls back to
--- printing the link if StaticPopup isn't available.
+-- Feedback: a small window with the Discord invite in a pre-selected edit
+-- box, so the player can Ctrl+C it (chat links can't be copied). Our own
+-- frame rather than a StaticPopup: those share Blizzard's dialog frames, a
+-- taint risk for later Blizzard dialogs. Falls back to printing the link.
 local DISCORD_URL = "https://discord.gg/3GSsbDWWbM"
 ns.DISCORD_URL = DISCORD_URL
 
-local function FeedbackEditBox(dialog)
-  if dialog.GetEditBox then return dialog:GetEditBox() end -- 11.2+ StaticPopup
-  return dialog.editBox or dialog.EditBox
+local feedbackFrame
+
+local function SelectLink(eb)
+  eb:SetText(DISCORD_URL)
+  eb:HighlightText()
+  eb:SetFocus()
+end
+
+local function CreateFeedback()
+  local f = CreateFrame("Frame", "AntiGriefFeedback", UIParent, "BackdropTemplate")
+  f:SetSize(360, 120)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+  f:SetFrameStrata("DIALOG")
+  f:SetClampedToScreen(true)
+  f:EnableMouse(true)
+  if f.SetBackdrop then
+    f:SetBackdrop({
+      bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+      edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+      tile = true, tileSize = 32, edgeSize = 32,
+      insets = { left = 11, right = 12, top = 12, bottom = 11 },
+    })
+  end
+  local text = f:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  text:SetPoint("TOP", f, "TOP", 0, -18)
+  text:SetWidth(320)
+  text:SetText("AntiGrief feedback and bug reports: join the Discord.\nPress Ctrl+C to copy the link, then paste it into your browser.")
+
+  local eb = CreateFrame("EditBox", "AntiGriefFeedbackLink", f, "InputBoxTemplate")
+  eb:SetSize(280, 20)
+  eb:SetPoint("TOP", text, "BOTTOM", 0, -10)
+  eb:SetAutoFocus(false)
+  -- read-only: typing puts the link back and re-selects it
+  eb:SetScript("OnTextChanged", function(self)
+    if self:GetText() ~= DISCORD_URL then self:SetText(DISCORD_URL) end
+    self:HighlightText()
+  end)
+  eb:SetScript("OnEnterPressed", function() f:Hide() end)
+  eb:SetScript("OnEscapePressed", function() f:Hide() end)
+  f.editBox = eb
+
+  local close = CreateFrame("Button", "AntiGriefFeedbackClose", f, "UIPanelButtonTemplate")
+  close:SetSize(90, 22)
+  close:SetPoint("BOTTOM", f, "BOTTOM", 0, 14)
+  close:SetText(CLOSE or "Close")
+  close:SetScript("OnClick", function() f:Hide() end)
+
+  f:Hide()
+  if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, "AntiGriefFeedback") end
+  return f
 end
 
 local function ShowFeedback()
-  if type(StaticPopupDialogs) == "table" and StaticPopup_Show then
-    if not StaticPopupDialogs.ANTIGRIEF_FEEDBACK then
-      StaticPopupDialogs.ANTIGRIEF_FEEDBACK = {
-        text = "AntiGrief feedback and bug reports: join the Discord.\nPress Ctrl+C to copy the link, then paste it into your browser.",
-        button1 = CLOSE or "Close",
-        hasEditBox = true,
-        editBoxWidth = 260,
-        OnShow = function(self)
-          local eb = FeedbackEditBox(self)
-          if not eb then return end
-          eb:SetText(DISCORD_URL)
-          eb:HighlightText()
-          eb:SetFocus()
-        end,
-        -- read-only: typing puts the link back and re-selects it
-        EditBoxOnTextChanged = function(eb)
-          if eb:GetText() ~= DISCORD_URL then eb:SetText(DISCORD_URL) end
-          eb:HighlightText()
-        end,
-        EditBoxOnEnterPressed = function(eb) eb:GetParent():Hide() end,
-        EditBoxOnEscapePressed = function(eb) eb:GetParent():Hide() end,
-        timeout = 0,
-        whileDead = true,
-        hideOnEscape = true,
-        preferredIndex = 3,
-      }
-    end
-    if pcall(StaticPopup_Show, "ANTIGRIEF_FEEDBACK") then return end
-  end
-  Print("feedback and bug reports: " .. DISCORD_URL)
+  local ok = CreateFrame and UIParent and pcall(function()
+    feedbackFrame = feedbackFrame or CreateFeedback()
+    feedbackFrame:Show()
+    SelectLink(feedbackFrame.editBox)
+  end)
+  if not ok then Print("feedback and bug reports: " .. DISCORD_URL) end
 end
 
 local function PrintHelp()
@@ -828,9 +1046,16 @@ SlashCmdList.ANTIGRIEF = function(input)
     Line(("sound %s, banner %s, announce %s, drop report %s, Pawn %s%s, margin %s"):format(
       OnOff(ns.db.sound), OnOff(ns.db.screen), OnOff(ns.db.announce), OnOff(ns.db.dropReport),
       OnOff(ns.db.usePawn), pawn and "" or " (not loaded)", tostring(ns.db.upgradeMargin)))
+    Line(("tooltip lines %s, roll-window badge %s, skip friends/guild %s"):format(
+      OnOff(ns.db.tooltip), OnOff(ns.db.lootBadge), OnOff(ns.db.skipFriends)))
     local _, ownTab = OutputFrame()
     Line(ownTab and "output: AntiGrief chat tab"
       or "output: main chat (a chat tab named AntiGrief would take it instead)")
+    local counts = {}
+    for k, n in pairs(runFlags) do counts[#counts + 1] = { runNames[k] or k, n } end
+    table.sort(counts, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[1] < b[1] end)
+    for i, c in ipairs(counts) do counts[i] = c[1] .. " " .. c[2] end
+    if #counts > 0 then Line("flagged this run: " .. table.concat(counts, ", ")) end
 
   elseif cmd == "config" or cmd == "options" then
     if not ConfigCall("Open") then PrintHelp() end
@@ -885,8 +1110,30 @@ SlashCmdList.ANTIGRIEF = function(input)
   elseif cmd == "drops" or cmd == "hints" then Toggle("dropReport", "Drop report")
   elseif cmd == "pawn" then Toggle("usePawn", "Pawn scoring")
   elseif cmd == "minimap" then Toggle("minimapButton", "Minimap button")
+  elseif cmd == "tooltip" then Toggle("tooltip", "Item tooltip lines")
+  elseif cmd == "badge" then Toggle("lootBadge", "Roll-window badge")
+  elseif cmd == "friends" then Toggle("skipFriends", "Skip friends and guildmates")
+
+  elseif cmd == "ignore" or cmd == "unignore" then
+    if type(ns.db.ignore) ~= "table" then ns.db.ignore = {} end
+    if rest == "" then
+      local names = {}
+      for k in pairs(ns.db.ignore) do names[#names + 1] = k end
+      table.sort(names)
+      Print(#names > 0 and ("ignored: " .. table.concat(names, ", ")) or "nobody is ignored; /ag ignore <name> adds someone")
+      return
+    end
+    local key = NameKey(rest)
+    if cmd == "unignore" or ns.db.ignore[key] then
+      ns.db.ignore[key] = nil
+      Print(Short(rest) .. " will be flagged again")
+    else
+      ns.db.ignore[key] = true
+      Print(Short(rest) .. " won't be flagged (/ag ignore " .. Short(rest) .. " again to undo)")
+    end
 
   elseif cmd == "log" then
+    if WindowCall("Toggle") then return end
     local log = ns.db.log
     if #log == 0 then Print("no flags logged"); return end
     Print("recent drops:")
@@ -900,6 +1147,7 @@ SlashCmdList.ANTIGRIEF = function(input)
     wipe(ns.db.log)
     local tab = FindChatWindow(LOG_TAB)
     if tab and tab.Clear then pcall(tab.Clear, tab) end
+    WindowCall("Refresh")
     -- in the main chat (where /ag was typed) and in the emptied AG Logs tab
     Report(("log history cleared (%d %s removed)"):format(n, n == 1 and "entry" or "entries"))
 
@@ -949,6 +1197,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
     LoadSettings()
     ConfigCall("Init") -- options panel (Config.lua), once the settings exist
     ButtonCall("Init") -- minimap button (Minimap.lua)
+    LootUICall("Init") -- item tooltip lines (LootUI.lua)
     InitPatterns()
     for _, e in ipairs({ "GROUP_ROSTER_UPDATE", "PLAYER_ENTERING_WORLD", "INSPECT_READY",
                          "UNIT_INVENTORY_CHANGED", "START_LOOT_ROLL", "CHAT_MSG_LOOT" }) do
@@ -961,7 +1210,22 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
   elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
     -- no-op once made; covers a minimap that didn't exist yet at ADDON_LOADED
-    if event == "PLAYER_ENTERING_WORLD" then ButtonCall("Init") end
+    if event == "PLAYER_ENTERING_WORLD" then
+      ButtonCall("Init")
+      -- a new run starts on entering a different instance
+      local instanceType, instanceID
+      if GetInstanceInfo then
+        local ok, _, itype, _, _, _, _, _, id = pcall(GetInstanceInfo)
+        if ok then instanceType, instanceID = itype, id end
+      end
+      if instanceType and instanceType ~= "none" and instanceID ~= runInstance then
+        runInstance = instanceID
+        ResetRun()
+      end
+    elseif not IsInGroup() then
+      ResetRun() -- left the group
+      runInstance = nil
+    end
     Inspect.Prune()
     PruneOlder(lastRescan, GetTime(), RESCAN_GAP)
     if ns.db.enabled then Inspect.QueueGroup(false) end
@@ -989,5 +1253,5 @@ ns._test = {
   BuildPattern = BuildPattern, ParseNeed = ParseNeed, InitPatterns = InitPatterns,
   ExtractItemLink = ExtractItemLink, CleanName = CleanName, UnitByName = UnitByName,
   patterns = NEED_PATTERNS, DROP_REPORT_MAX = DROP_REPORT_MAX,
-  ParseWin = ParseWin, winPatterns = WIN_PATTERNS,
+  ParseWin = ParseWin, winPatterns = WIN_PATTERNS, runFlags = runFlags,
 }

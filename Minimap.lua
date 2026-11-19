@@ -1,5 +1,5 @@
 -- AntiGrief: minimap button. The AntiGrief logo (media/minimap.tga) in the
--- standard minimap-button ring. Click opens a menu (Log / Settings); drag moves it
+-- standard minimap-button ring. Click opens a small menu (Log / Settings / ...); drag moves it
 -- around the minimap edge. No libraries: the layout and
 -- placement math follow the common LibDBIcon approach.
 --
@@ -64,26 +64,93 @@ local function OnDragUpdate()
   UpdatePosition()
 end
 
--- Click menu: Log (opens the AG Logs chat tab with the flag history),
--- Settings (options page), then after a divider Clear Log History and
--- Feedback (Discord link in a copy box).
--- Uses the 11.0+ Menu API (Blizzard_Menu, MenuUtil.CreateContextMenu).
--- Returns false if the menu couldn't be shown, so the caller can fall back.
-local function MenuGenerator(_, root)
-  root:CreateTitle("AntiGrief")
-  root:CreateButton("Log", function() Slash("history") end)
-  root:CreateButton("Settings", function() Slash("config") end)
-  if root.CreateDivider then root:CreateDivider() end
-  root:CreateButton("Clear Log History", function() Slash("clear") end)
-  root:CreateButton("Feedback", function() Slash("feedback") end)
+-- Click menu: Log (the log window), Settings (options page), then after a
+-- divider Clear Log History and Feedback (Discord link in a copy box).
+--
+-- A small frame of our own, not Blizzard's Menu API: menus an addon opens
+-- through MenuUtil share Blizzard's menu system with the unit right-click
+-- menus, and in game that left the raid-marker entries blocked
+-- (ADDON_ACTION_FORBIDDEN SetRaidTarget, blamed on AntiGrief). Closes on a
+-- pick, a click anywhere else (GLOBAL_MOUSE_DOWN) or Escape (UISpecialFrames).
+local MENU_ITEMS = {
+  { "Log", "log" },
+  { "Settings", "config" },
+  false, -- divider
+  { "Clear Log History", "clear" },
+  { "Feedback", "feedback" },
+}
+local MENU_WIDTH, ITEM_HEIGHT, PAD = 150, 18, 8
+
+local menu -- created on first open
+
+local function CreateMenu()
+  local m = CreateFrame("Frame", "AntiGriefMenu", UIParent, "BackdropTemplate")
+  m:SetFrameStrata("DIALOG")
+  m:SetClampedToScreen(true)
+  m:EnableMouse(true)
+  if m.SetBackdrop then
+    m:SetBackdrop({
+      bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+      tile = true, tileSize = 16, edgeSize = 16,
+      insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    m:SetBackdropColor(0, 0, 0, 0.92)
+  end
+  local title = m:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  title:SetPoint("TOPLEFT", m, "TOPLEFT", PAD + 2, -PAD)
+  title:SetText("AntiGrief")
+  local y = -PAD - ITEM_HEIGHT
+  m.items = {}
+  for i, item in ipairs(MENU_ITEMS) do
+    if item then
+      local b = CreateFrame("Button", "AntiGriefMenuItem" .. i, m)
+      b:SetSize(MENU_WIDTH - 2 * PAD, ITEM_HEIGHT)
+      b:SetPoint("TOPLEFT", m, "TOPLEFT", PAD, y)
+      b:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+      local text = b:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+      text:SetPoint("LEFT", b, "LEFT", 4, 0)
+      text:SetText(item[1])
+      local cmd = item[2]
+      b:SetScript("OnClick", function()
+        m:Hide()
+        Slash(cmd)
+      end)
+      m.items[#m.items + 1] = { text = item[1], cmd = cmd, button = b }
+      y = y - ITEM_HEIGHT
+    else
+      local line = m:CreateTexture(nil, "ARTWORK")
+      line:SetColorTexture(1, 1, 1, 0.2)
+      line:SetSize(MENU_WIDTH - 2 * PAD, 1)
+      line:SetPoint("TOPLEFT", m, "TOPLEFT", PAD, y - 4)
+      m.items[#m.items + 1] = { divider = true }
+      y = y - 9
+    end
+  end
+  m:SetSize(MENU_WIDTH, -y + PAD)
+  m:SetScript("OnShow", function(self) self:RegisterEvent("GLOBAL_MOUSE_DOWN") end)
+  m:SetScript("OnHide", function(self) self:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
+  -- A click outside the menu (or its button, which toggles it itself) closes it
+  m:SetScript("OnEvent", function(self)
+    if not self:IsMouseOver() and not (button and button:IsMouseOver()) then self:Hide() end
+  end)
+  m:Hide()
+  if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, "AntiGriefMenu") end
+  return m
 end
 
-local function OpenMenu(owner)
-  if not (MenuUtil and MenuUtil.CreateContextMenu) then return false end
-  return (pcall(MenuUtil.CreateContextMenu, owner, MenuGenerator))
+local function ToggleMenu(owner)
+  menu = menu or CreateMenu()
+  if menu:IsShown() then menu:Hide(); return end
+  menu:ClearAllPoints()
+  menu:SetPoint("TOPRIGHT", owner, "BOTTOMLEFT", 8, 8)
+  menu:Show()
 end
+Button.ToggleMenu = ToggleMenu
+function Button.Menu() return menu end
 
-local function ShowTooltip(self)
+-- `compartment`: shown for the AddOns-menu entry, which has no menu or drag
+local function ShowTooltip(self, compartment)
   if not GameTooltip then return end
   GameTooltip:SetOwner(self, "ANCHOR_LEFT")
   GameTooltip:SetText("AntiGrief")
@@ -98,8 +165,13 @@ local function ShowTooltip(self)
       end
     end
   end
-  GameTooltip:AddLine("Click: Log or Settings", 0.8, 0.8, 0.8)
-  GameTooltip:AddLine("Drag: move", 0.8, 0.8, 0.8)
+  if compartment then
+    GameTooltip:AddLine("Click: log window; right-click: settings", 0.8, 0.8, 0.8)
+  else
+    GameTooltip:AddLine("Click: menu (Log, Settings)", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Shift-click: log window; shift-right-click: settings", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Drag: move", 0.8, 0.8, 0.8)
+  end
   GameTooltip:Show()
 end
 
@@ -138,12 +210,14 @@ local function Create()
 
   b:SetScript("OnClick", function(self, mouse)
     if GameTooltip then GameTooltip:Hide() end
-    if not OpenMenu(self) then
-      -- no menu API: left-click options, right-click log
-      if mouse == "RightButton" then Slash("history") else Slash("config") end
+    if IsShiftKeyDown and IsShiftKeyDown() then
+      -- shortcuts: shift-left the log window, shift-right the options
+      Slash(mouse == "RightButton" and "config" or "log")
+      return
     end
+    ToggleMenu(self)
   end)
-  b:SetScript("OnEnter", ShowTooltip)
+  b:SetScript("OnEnter", function(self) ShowTooltip(self) end) -- not OnEnter's 2nd arg (motion)
   b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
   b:SetScript("OnDragStart", function(self)
     if GameTooltip then GameTooltip:Hide() end
@@ -172,4 +246,33 @@ function Button.Init()
   if button or type(Minimap) ~= "table" or not CreateFrame or not ns.db then return end
   button = Create()
   Button.Refresh()
+end
+
+-- AddOns menu (the addon compartment, next to the minimap): the TOC names
+-- these functions. Left-click opens the log window, right-click the
+-- settings. Works with the minimap button hidden.
+local function MouseButton(...)
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    if v == "LeftButton" or v == "RightButton" then return v end
+  end
+end
+local function FirstFrame(...)
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    if type(v) == "table" then return v end
+  end
+end
+
+function AntiGrief_OnAddonCompartmentClick(_, ...)
+  Slash(MouseButton(...) == "RightButton" and "config" or "log")
+end
+
+function AntiGrief_OnAddonCompartmentEnter(_, ...)
+  local owner = FirstFrame(...)
+  if owner then ShowTooltip(owner, true) end
+end
+
+function AntiGrief_OnAddonCompartmentLeave()
+  if GameTooltip then GameTooltip:Hide() end
 end

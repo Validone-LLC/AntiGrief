@@ -549,4 +549,82 @@ Settings = {
 }
 MinimalSliderWithSteppersMixin = { Label = { Left = 0, Right = 1, Top = 2, Min = 3, Max = 4 } }
 
+
+---------------------------------------------------------------------------
+-- Round 4 additions: instance info, combat, friends/guild, own UI frames,
+-- loot roll frames, tooltip post-calls, addon compartment
+---------------------------------------------------------------------------
+-- GetInstanceInfo: S.instanceInfo is its return list (nil -> open world)
+S.instanceInfo = nil
+function GetInstanceInfo()
+  if S.instanceInfo then return unpack(S.instanceInfo) end
+  return "Elwynn Forest", "none", 0, "", 0, 0, false, 0
+end
+function UnitAffectingCombat(u) local d = U(u); return d ~= nil and d.combat == true end
+function UnitIsInMyGuild(u) local d = U(u); return d ~= nil and d.guild == true end
+S.friends = {} -- guid -> true
+C_FriendList = { IsFriend = function(guid) return S.friends[guid] == true end }
+S.shift = false
+function IsShiftKeyDown() return S.shift end
+UIParent = CreateFrame("Frame", nil)
+UISpecialFrames = {}
+
+-- Text, check state, focus and message lines for our own windows. Added to
+-- every frame CreateFrame makes from here on (the base stub ignores them).
+local baseCreateFrame = CreateFrame
+function CreateFrame(frameType, name, parent, template)
+  local f = baseCreateFrame(frameType, name, parent)
+  f.template = template
+  function f:SetText(t) self.text = t end
+  function f:GetText() return self.text end
+  function f:SetChecked(v) self.checked = v and true or false end
+  function f:GetChecked() return self.checked end
+  function f:HighlightText() self.highlighted = true end
+  function f:SetFocus() self.focused = true end
+  function f:IsMouseOver() return self.mouseOver == true end
+  if frameType == "ScrollingMessageFrame" then
+    f.lines = {}
+    function f:AddMessage(m) self.lines[#self.lines + 1] = m end
+    function f:Clear() self.lines = {} end
+  end
+  return f
+end
+-- Calls a frame script the way the client would (OnClick, OnTextChanged, ...)
+function S.run(frame, script, ...)
+  local fn = frame.scripts[script]
+  if fn then return fn(frame, ...) end
+end
+for _, n in ipairs({ "AntiGriefMenu", "AntiGriefLogWindow", "AntiGriefFeedback", "AntiGriefFeedbackLink" }) do
+  rawset(_G, n, nil)
+end
+for i = 1, 6 do rawset(_G, "AntiGriefMenuItem" .. i, nil) end
+
+-- Blizzard's loot roll windows: tests create them with S.rollFrame(i, rollID)
+for i = 1, 4 do rawset(_G, "GroupLootFrame" .. i, nil); rawset(_G, "AntiGriefRollBadge" .. i, nil) end
+function S.rollFrame(i, rollID)
+  local f = baseCreateFrame("Frame", "GroupLootFrame" .. i)
+  f.rollID = rollID
+  f:Show()
+  return f
+end
+
+-- Tooltips: post-calls registered per tooltip data type
+S.postCalls = {}
+Enum.TooltipDataType = { Item = 0 }
+TooltipDataProcessor = {
+  AddTooltipPostCall = function(kind, fn)
+    S.postCalls[kind] = S.postCalls[kind] or {}
+    table.insert(S.postCalls[kind], fn)
+  end,
+}
+-- Shows `link` in a fake tooltip and runs the item post-calls; returns the added lines
+function S.hoverItem(tooltip, link)
+  tooltip.lines = {}
+  tooltip.GetItem = function() return "item", link end
+  for _, fn in ipairs(S.postCalls[Enum.TooltipDataType.Item] or {}) do fn(tooltip, {}) end
+  return tooltip.lines
+end
+ItemRefTooltip = { lines = {} }
+function ItemRefTooltip:AddLine(t) self.lines[#self.lines + 1] = t end
+
 return S

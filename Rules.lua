@@ -5,6 +5,10 @@ local D = ns.Data
 local Rules = {}
 ns.Rules = Rules
 
+-- Level requirement gap: up to LEVEL_GAP_LOW levels short is Low, up to
+-- LEVEL_GAP_MEDIUM is Medium, more is High
+local LEVEL_GAP_LOW, LEVEL_GAP_MEDIUM = 2, 5
+
 -- Fixed order so finding text doesn't depend on pairs() iteration order
 local BUCKET_ORDER = { "STR", "AGI", "INT", "CASTER", "AP", "TANK" }
 
@@ -95,9 +99,12 @@ function Rules.Evaluate(link, who)
   local _, _, _, _, minLevel, _, _, _, _, _, _, _, _, bindType = D.GetItemInfo(link)
   local usePawn = ns.db and ns.db.usePawn
 
-  -- 1) Level requirement
+  -- 1) Level requirement. A level or two short is usually a few quests or
+  -- one dungeon away, so the severity grows with the gap.
   if minLevel and minLevel > 0 and level > 0 and minLevel > level then
-    add(D.HIGH, ("requires level %d, they're level %d"):format(minLevel, level))
+    local gap = minLevel - level
+    local sev = (gap <= LEVEL_GAP_LOW and D.LOW) or (gap <= LEVEL_GAP_MEDIUM and D.MEDIUM) or D.HIGH
+    add(sev, ("requires level %d, they're level %d"):format(minLevel, level))
   end
 
   -- 2) Armor type
