@@ -191,8 +191,8 @@ RaidWarningUtil = {
   AddMessage = function(text, colorInfo) S.banners[#S.banners + 1] = { text = text, color = colorInfo } end,
 }
 ChatTypeInfo = { RAID_WARNING = { r = 1, g = 0.28, b = 0 } }
-SOUNDKIT = { RAID_WARNING = 8959 }
-function PlaySound() S.sounds = S.sounds + 1 end
+SOUNDKIT = { RAID_WARNING = 8959, ALARM_CLOCK_WARNING_3 = 12889 }
+function PlaySound(id) S.sounds = S.sounds + 1; S.lastSound = id end
 SendChatMessage = nil
 S.chatLockdown = false
 C_ChatInfo = {
