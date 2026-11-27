@@ -62,9 +62,9 @@ jobs:
             echo "DISCORD_RELEASES_WEBHOOK is not set; skipping."
             exit 0
           fi
+          # Name and avatar come from the webhook's own settings in Discord
+          # (a raw.githubusercontent.com avatar wouldn't load from a private repo)
           jq -n --arg repo "$REPO" --arg tag "$TAG" --rawfile notes notes.md '{
-            username: "AntiGrief",
-            avatar_url: ("https://raw.githubusercontent.com/" + $repo + "/master/media/icon-256.png"),
             embeds: [{
               title: ("AntiGrief " + $tag + " released"),
               url: ("https://github.com/" + $repo + "/releases/tag/" + $tag),
