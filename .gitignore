@@ -11,3 +11,8 @@ desktop.ini
 *.zip
 dist/
 release/
+
+# Internal working files (kept locally, not published)
+.claude/
+claudedocs/
+docs/AntiGrief*Design*.md
