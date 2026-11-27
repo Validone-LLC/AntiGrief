@@ -1,0 +1,16 @@
+# For the BigWigs packager used by CurseForge and Wago, if the addon is
+# published there. Local and GitHub builds use scripts/package.sh instead.
+package-as: AntiGrief
+
+ignore:
+  - .claude
+  - .github
+  - claudedocs
+  - docs
+  - scripts
+  - tests
+  - release
+  - .luacheckrc
+  - media/icon-64.png
+  - media/icon-256.png
+  - media/icon-512.png

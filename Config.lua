@@ -52,7 +52,7 @@ local CONTROLS = {
       { 3, "High",   "Warn only when the item clearly can't be used or doesn't suit the class." },
     } },
   { key = "sound", kind = CHECKBOX, default = true, label = "Play sound",
-    tooltip = "Play the raid warning sound when a warning appears." },
+    tooltip = "Play the raid warning horn when a flagged player wins the item, and an alarm when they still haven't equipped it. Need rolls are silent." },
   { key = "screen", kind = CHECKBOX, default = true, label = "Show banner",
     tooltip = "Show a one-line warning in the middle of your screen." },
   { key = "announce", kind = CHECKBOX, default = false, label = "Announce to group",

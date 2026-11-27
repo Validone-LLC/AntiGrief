@@ -346,9 +346,14 @@ local function Banner(text)
   D.ShowBanner(text, color)
 end
 
-local function AlertSound()
+-- Two sounds only: a flagged player won the item (raid-warning horn), and a
+-- flagged winner still hasn't equipped it (alarm clock). Need rolls are silent.
+local SOUND_WON = { "RAID_WARNING", 8959 }
+local SOUND_NOT_EQUIPPED = { "ALARM_CLOCK_WARNING_3", 12889 }
+
+local function AlertSound(sound)
   if ns.db.sound and PlaySound then
-    pcall(PlaySound, (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959, "Master")
+    pcall(PlaySound, (SOUNDKIT and SOUNDKIT[sound[1]]) or sound[2], "Master")
   end
 end
 
@@ -381,8 +386,8 @@ local function DedupeKey(who, link)
 end
 
 -- Logs a misfit Need (any severity) and, when `notify` (at or above the
--- alert threshold), also prints it, shows the banner, plays the sound and
--- announces if enabled.
+-- alert threshold), also prints it, shows the banner and announces if
+-- enabled. No sound: that waits for the win.
 local function Alert(who, link, findings, maxSev, itemNotLoaded, notify)
   if not findings or #findings == 0 or not D.SEV_COLOR[maxSev] then return end
   local now = GetTime()
@@ -409,7 +414,6 @@ local function Alert(who, link, findings, maxSev, itemNotLoaded, notify)
   else
     Banner(("AntiGrief: %s's Need on %s doesn't fit"):format(short, link))
   end
-  AlertSound()
   Announce(key, ("[AntiGrief] %s's Need on %s doesn't look like a fit: %s"):format(short, link, findings[1].text))
 end
 
@@ -473,6 +477,7 @@ local function LogWin(who, link, findings, maxSev, notify, offSpec)
   local notes = {}
   if offSpec then notes[1] = "off-spec Need, one severity lower" end
   Report(FlagLine(who.name, "won %s with Need", link, findings, maxSev, notes))
+  AlertSound(SOUND_WON)
 end
 
 ---------------------------------------------------------------------------
@@ -506,7 +511,7 @@ local function LogEquip(c, result)
   Report(FlagLine(c.name, "hasn't equipped %s " .. Duration(after) .. " after winning it with Need", c.link,
     { { sev = c.sev, text = "not in any equipped slot" } }, c.sev, {}))
   Banner(("AntiGrief: %s won %s but hasn't equipped it"):format(Short(c.name), c.link))
-  AlertSound()
+  AlertSound(SOUND_NOT_EQUIPPED)
 end
 
 local function TakeCheck(guid, c)
